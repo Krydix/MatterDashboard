@@ -1,8 +1,15 @@
 import { app, BrowserWindow } from "electron";
 import { ChildProcess, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import path from "node:path";
 import { KioskTarget, MatterStatus } from "../shared/types";
 import { KioskWindowHandle, openKioskWindow } from "./windows";
+
+interface WorkerLaunchConfig {
+  executable: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+}
 
 type MatterWorkerCommand =
   | { type: "start"; requestId: number; storagePath: string; targets: KioskTarget[] }
@@ -146,15 +153,11 @@ export class MatterBridge {
 
   private spawnWorker(): void {
     const workerScript = path.join(__dirname, "matter-worker.js");
-    const nodeExecutable =
-      process.env["MATTERKIOSK_NODE_PATH"] ??
-      process.env["npm_node_execpath"] ??
-      process.env["NODE"] ??
-      "node";
+    const launchConfig = getWorkerLaunchConfig(workerScript);
 
-    this.child = spawn(nodeExecutable, [workerScript], {
+    this.child = spawn(launchConfig.executable, launchConfig.args, {
       stdio: ["ignore", "inherit", "inherit", "ipc"],
-      env: process.env,
+      env: launchConfig.env,
     });
 
     this.child.on("message", (message: MatterWorkerResponse | MatterWorkerEvent) => {
@@ -180,6 +183,7 @@ export class MatterBridge {
     this.child.once("error", (error) => {
       this.closeActiveKioskWindows();
       this.rejectPendingRequests(error);
+      this.child = null;
       this.status = STOPPED_STATUS;
       console.error("[Matter] Worker process failed:", error);
     });
@@ -201,7 +205,8 @@ export class MatterBridge {
   }
 
   private async request(command: MatterWorkerCommand): Promise<MatterStatus | undefined> {
-    if (!this.child || !this.child.connected) {
+    const child = this.child;
+    if (!child || !child.connected) {
       throw new Error("Matter worker is not running.");
     }
 
@@ -212,7 +217,14 @@ export class MatterBridge {
       this.pendingRequests.set(requestId, { resolve, reject });
 
       try {
-        this.child!.send(message);
+        child.send(message, (error) => {
+          if (!error || !this.pendingRequests.has(requestId)) {
+            return;
+          }
+
+          this.pendingRequests.delete(requestId);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        });
       } catch (error) {
         this.pendingRequests.delete(requestId);
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -321,6 +333,41 @@ export class MatterBridge {
 
 function cloneTargets(targets: KioskTarget[]): KioskTarget[] {
   return targets.map((target) => ({ ...target }));
+}
+
+function getWorkerLaunchConfig(workerScript: string): WorkerLaunchConfig {
+  const explicitNodeExecutable =
+    process.env["MATTERKIOSK_NODE_PATH"] ??
+    process.env["npm_node_execpath"] ??
+    process.env["NODE"];
+
+  if (explicitNodeExecutable) {
+    return {
+      executable: explicitNodeExecutable,
+      args: [workerScript],
+      env: process.env,
+    };
+  }
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+  };
+
+  // Electron's bundled runtime can miss AES-CCM, which breaks Matter CASE/PASE.
+  if (env["MATTER_NODEJS_CRYPTO"] === undefined && !supportsMatterNativeCrypto()) {
+    env["MATTER_NODEJS_CRYPTO"] = "false";
+  }
+
+  return {
+    executable: process.execPath,
+    args: [workerScript],
+    env,
+  };
+}
+
+function supportsMatterNativeCrypto(): boolean {
+  return crypto.getCiphers().includes("aes-128-ccm");
 }
 
 let bridge: MatterBridge | null = null;
