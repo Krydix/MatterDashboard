@@ -102,17 +102,17 @@ export default function PairingPage(): React.ReactElement {
             </div>
           )}
 
-          <div className="card">
-            <h2 className="section-title">Reset Pairing</h2>
-            <p className="text-muted" style={{ marginBottom: 16 }}>
-              {status.paired
-                ? "Removes all commissioning data. Use this if you want to move the bridge to a different smart home ecosystem or start fresh."
-                : "Factory reset is only needed after the bridge has been paired to a Matter controller."}
-            </p>
-            <button className="danger" onClick={handleReset} disabled={resetting || !status.paired}>
-              {resetting ? "Resetting…" : "Factory Reset Matter"}
-            </button>
-          </div>
+          {status.paired && (
+            <div className="card">
+              <h2 className="section-title">Reset Pairing</h2>
+              <p className="text-muted" style={{ marginBottom: 16 }}>
+                Removes all commissioning data. Use this if you want to move the bridge to a different smart home ecosystem or start fresh.
+              </p>
+              <button className="danger" onClick={handleReset} disabled={resetting}>
+                {resetting ? "Resetting…" : "Factory Reset Matter"}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

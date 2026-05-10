@@ -174,13 +174,14 @@ class MatterBridgeWorker {
       return this.getStatus();
     }
 
-    const targets = cloneTargets(this.targets);
-    await this.server.reset();
-    await this.stop();
-    return this.start(this.storagePath, targets);
+    await this.server.erase();
+    this.refreshStatusFromServer();
+    return this.getStatus();
   }
 
   getStatus(): MatterStatus {
+    this.refreshStatusFromServer();
+
     return {
       started: this.server !== null,
       paired: this.paired,
@@ -194,13 +195,31 @@ class MatterBridgeWorker {
       return;
     }
 
-    await this.server.close();
-    this.server = null;
-    this.aggregator = null;
-    this.endpoints.clear();
-    this.paired = false;
-    this.qrCode = "";
-    this.manualPairingCode = "";
+    try {
+      await this.server.close();
+    } finally {
+      this.server = null;
+      this.aggregator = null;
+      this.endpoints.clear();
+      this.paired = false;
+      this.qrCode = "";
+      this.manualPairingCode = "";
+    }
+  }
+
+  private refreshStatusFromServer(): void {
+    if (!this.server) {
+      return;
+    }
+
+    try {
+      const commissioningState = this.server.stateOf(CommissioningServer);
+      this.paired = commissioningState.commissioned;
+      this.qrCode = commissioningState.pairingCodes.qrPairingCode;
+      this.manualPairingCode = commissioningState.pairingCodes.manualPairingCode;
+    } catch (error) {
+      console.warn("[Matter] Could not read pairing status:", error);
+    }
   }
 
   private async addEndpoint(target: KioskTarget): Promise<void> {
