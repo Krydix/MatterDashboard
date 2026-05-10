@@ -1,240 +1,283 @@
-import "@matter/main/platform";
 import { app, BrowserWindow } from "electron";
-import path from "path";
-import { Endpoint, Environment, ServerNode, VendorId, CommissioningServer } from "@matter/main";
-import { BridgedDeviceBasicInformationServer } from "@matter/main/behaviors/bridged-device-basic-information";
-import { OnOffPlugInUnitDevice } from "@matter/main/devices/on-off-plug-in-unit";
-import { AggregatorEndpoint } from "@matter/main/endpoints/aggregator";
+import { ChildProcess, spawn } from "node:child_process";
+import path from "node:path";
 import { KioskTarget, MatterStatus } from "../shared/types";
 import { openKioskWindow } from "./windows";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+type MatterWorkerCommand =
+  | { type: "start"; requestId: number; storagePath: string; targets: KioskTarget[] }
+  | { type: "sync-targets"; requestId: number; targets: KioskTarget[] }
+  | { type: "get-status"; requestId: number }
+  | { type: "reset"; requestId: number }
+  | { type: "set-target-off"; requestId: number; targetId: string }
+  | { type: "stop"; requestId: number };
 
-interface EndpointEntry {
-  endpoint: Endpoint;
+type MatterWorkerResponse = {
+  type: "response";
+  requestId: number;
+  ok: boolean;
+  result?: MatterStatus;
+  error?: string;
+};
+
+type MatterWorkerEvent = {
+  type: "target-triggered";
   targetId: string;
-}
+};
 
-// ─── MatterBridge ────────────────────────────────────────────────────────────
+const STOPPED_STATUS: MatterStatus = {
+  started: false,
+  paired: false,
+  qrCode: "",
+  manualPairingCode: "",
+};
 
 export class MatterBridge {
-  private server: ServerNode | null = null;
-  private aggregator: Endpoint | null = null;
-  private endpoints = new Map<string, EndpointEntry>(); // keyed by target id
+  private child: ChildProcess | null = null;
   private storagePath: string;
   private targets: KioskTarget[] = [];
-  private _qrCode = "";
-  private _manualPairingCode = "";
-  private _paired = false;
+  private nextRequestId = 1;
+  private status: MatterStatus = STOPPED_STATUS;
+  private pendingRequests = new Map<
+    number,
+    {
+      resolve: (status: MatterStatus | undefined) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  private stopping = false;
 
   constructor(storagePath: string) {
     this.storagePath = storagePath;
   }
 
   async start(targets: KioskTarget[]): Promise<void> {
-    this.targets = targets.map((target) => ({ ...target }));
+    this.targets = cloneTargets(targets);
 
-    // Set the matter.js storage path via environment variable
-    Environment.default.vars.set("storage.path", this.storagePath);
-
-    this.server = await ServerNode.create({
-      id: "matter-kiosk-bridge",
-      network: {
-        port: 5540,
-      },
-      commissioning: {
-        passcode: 20202021,
-        discriminator: 3840,
-      },
-      productDescription: {
-        name: "MatterKiosk",
-        deviceType: AggregatorEndpoint.deviceType,
-      },
-      basicInformation: {
-        vendorName: "MatterKiosk",
-        vendorId: VendorId(0xfff1),
-        nodeLabel: "MatterKiosk Bridge",
-        productName: "MatterKiosk",
-        productLabel: "MatterKiosk Bridge",
-        productId: 0x8000,
-        serialNumber: "matter-kiosk-bridge-1",
-        uniqueId: "matter-kiosk-bridge-1",
-      },
-    });
-
-    // Capture QR / pairing codes before starting
-    this.server.lifecycle.commissioned.on(() => {
-      console.log("[Matter] Bridge commissioned!");
-    });
-
-    this.aggregator = new Endpoint(AggregatorEndpoint, { id: "aggregator" });
-    await (this.server as unknown as Endpoint).add(this.aggregator);
-
-    // Add all currently enabled targets
-    const enabledTargets = targets.filter((t) => t.enabled);
-    for (const target of enabledTargets) {
-      await this._addEndpoint(target);
+    if (!this.child) {
+      this.spawnWorker();
     }
 
-    await this.server.start();
-
-    // Extract QR/pairing codes and commissioned state after start
-    try {
-      const commState = this.server.stateOf(CommissioningServer);
-      this._paired = commState.commissioned;
-      this._qrCode = commState.pairingCodes.qrPairingCode;
-      this._manualPairingCode = commState.pairingCodes.manualPairingCode;
-    } catch (e) {
-      console.warn("[Matter] Could not read pairing codes:", e);
-    }
-
-    // Watch for commissioning changes
-    this.server.events.commissioning.commissioned.on(() => {
-      console.log("[Matter] Bridge commissioned!");
-      this._paired = true;
+    const status = await this.request({
+      type: "start",
+      requestId: 0,
+      storagePath: this.storagePath,
+      targets: this.targets,
     });
 
-    this.server.events.commissioning.decommissioned.on(() => {
-      console.log("[Matter] Bridge decommissioned!");
-      this._paired = false;
-    });
-    console.log("[Matter] Bridge started.");
-    if (this._qrCode) console.log(`[Matter] QR Code: ${this._qrCode}`);
-    if (this._manualPairingCode) console.log(`[Matter] Manual code: ${this._manualPairingCode}`);
+    this.status = status ?? { ...STOPPED_STATUS, started: true };
   }
 
-  private async _addEndpoint(target: KioskTarget): Promise<void> {
-    if (!this.aggregator) return;
-    if (this.endpoints.has(target.id)) return; // already exists
-
-    const name = target.name;
-
-    const endpoint = new Endpoint(
-      OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer),
-      {
-        // Use the target id as the stable endpoint id so it survives restarts
-        id: `kiosk-${target.id}`,
-        bridgedDeviceBasicInformation: {
-          nodeLabel: name,
-          productName: name,
-          productLabel: name,
-          serialNumber: `mk-${target.id.substring(0, 25)}`,  // max 32 chars
-          reachable: true,
-        },
-      },
-    );
-
-    await (this.aggregator as unknown as Endpoint).add(endpoint);
-
-    endpoint.events.onOff.onOff$Changed.on((value: boolean) => {
-      if (value) {
-        console.log(`[Matter] Target "${name}" turned ON — opening kiosk`);
-        this._notifyRenderer(target.id);
-        openKioskWindow(target.url, target.durationSeconds * 1000).catch(console.error);
-      } else {
-        console.log(`[Matter] Target "${name}" turned OFF`);
-      }
-    });
-
-    this.endpoints.set(target.id, { endpoint, targetId: target.id });
-    console.log(`[Matter] Added endpoint for target "${name}"`);
-  }
-
-  private async _removeEndpoint(targetId: string): Promise<void> {
-    const entry = this.endpoints.get(targetId);
-    if (!entry) return;
-
-    await entry.endpoint.close();
-    this.endpoints.delete(targetId);
-    console.log(`[Matter] Removed endpoint for target id "${targetId}"`);
-  }
-
-  /**
-   * Synchronise Matter endpoints to reflect the current list of enabled targets.
-   * Adds new endpoints and removes deleted/disabled ones — no re-pairing required.
-   */
   async syncTargets(targets: KioskTarget[]): Promise<void> {
-    if (!this.server || !this.aggregator) return;
-
-    this.targets = targets.map((target) => ({ ...target }));
-
-    const enabledIds = new Set(targets.filter((t) => t.enabled).map((t) => t.id));
-    const existingIds = new Set(this.endpoints.keys());
-
-    // Remove endpoints for targets that are gone or disabled
-    for (const id of existingIds) {
-      if (!enabledIds.has(id)) {
-        await this._removeEndpoint(id);
-      }
+    if (!this.child) {
+      return;
     }
 
-    // Add endpoints for new or newly enabled targets
-    for (const target of targets) {
-      if (target.enabled && !existingIds.has(target.id)) {
-        await this._addEndpoint(target);
-      }
-    }
+    this.targets = cloneTargets(targets);
+    const status = await this.request({
+      type: "sync-targets",
+      requestId: 0,
+      targets: this.targets,
+    });
 
-    // Update names for existing endpoints that may have been renamed
-    for (const target of targets) {
-      const entry = this.endpoints.get(target.id);
-      if (entry && target.enabled) {
-        try {
-          await entry.endpoint.setStateOf(BridgedDeviceBasicInformationServer, {
-            nodeLabel: target.name,
-            productName: target.name,
-            productLabel: target.name,
-          });
-        } catch {
-          // Not critical if rename fails while bridge is offline
-        }
-      }
+    if (status) {
+      this.status = status;
     }
   }
 
-  getStatus(): MatterStatus {
-    return {
-      started: this.server !== null,
-      paired: this._paired,
-      qrCode: this._qrCode,
-      manualPairingCode: this._manualPairingCode,
-    };
+  async getStatus(): Promise<MatterStatus> {
+    if (!this.child) {
+      return this.status;
+    }
+
+    const status = await this.request({
+      type: "get-status",
+      requestId: 0,
+    });
+
+    if (status) {
+      this.status = status;
+    }
+
+    return this.status;
   }
 
   async reset(): Promise<void> {
-    if (!this.server) return;
+    if (!this.child) {
+      return;
+    }
 
-    const targets = this.targets.map((target) => ({ ...target }));
+    const status = await this.request({
+      type: "reset",
+      requestId: 0,
+    });
 
-    await this.server.reset();
-    await this.stop();
-    await this.start(targets);
-    console.log("[Matter] Reset complete.");
-  }
-
-  async stop(): Promise<void> {
-    if (this.server) {
-      await this.server.close();
-      this.server = null;
-      this.aggregator = null;
-      this.endpoints.clear();
-      this._paired = false;
-      this._qrCode = "";
-      this._manualPairingCode = "";
+    if (status) {
+      this.status = status;
     }
   }
 
-  private _notifyRenderer(targetId: string): void {
-    // Send to all renderer windows (settings window if open)
+  async stop(): Promise<void> {
+    if (!this.child) {
+      this.status = STOPPED_STATUS;
+      return;
+    }
+
+    this.stopping = true;
+
+    try {
+      await this.request({
+        type: "stop",
+        requestId: 0,
+      });
+    } catch {
+      // Child is already stopping.
+    }
+
+    this.cleanupChild();
+    this.stopping = false;
+  }
+
+  private spawnWorker(): void {
+    const workerScript = path.join(__dirname, "matter-worker.js");
+    const nodeExecutable =
+      process.env["MATTERKIOSK_NODE_PATH"] ??
+      process.env["npm_node_execpath"] ??
+      process.env["NODE"] ??
+      "node";
+
+    this.child = spawn(nodeExecutable, [workerScript], {
+      stdio: ["ignore", "inherit", "inherit", "ipc"],
+      env: process.env,
+    });
+
+    this.child.on("message", (message: MatterWorkerResponse | MatterWorkerEvent) => {
+      if (!message || typeof message !== "object" || !("type" in message)) {
+        return;
+      }
+
+      if (message.type === "response") {
+        this.handleResponse(message);
+        return;
+      }
+
+      if (message.type === "target-triggered") {
+        this.handleTargetTriggered(message.targetId);
+      }
+    });
+
+    this.child.once("error", (error) => {
+      this.rejectPendingRequests(error);
+      this.status = STOPPED_STATUS;
+      console.error("[Matter] Worker process failed:", error);
+    });
+
+    this.child.once("exit", (code, signal) => {
+      const error = new Error(
+        `[Matter] Worker exited${code !== null ? ` with code ${code}` : ""}${signal ? ` (signal ${signal})` : ""}.`,
+      );
+
+      if (!this.stopping) {
+        console.error(error.message);
+      }
+
+      this.rejectPendingRequests(error);
+      this.child = null;
+      this.status = STOPPED_STATUS;
+    });
+  }
+
+  private async request(command: MatterWorkerCommand): Promise<MatterStatus | undefined> {
+    if (!this.child || !this.child.connected) {
+      throw new Error("Matter worker is not running.");
+    }
+
+    const requestId = this.nextRequestId++;
+    const message = { ...command, requestId };
+
+    return new Promise<MatterStatus | undefined>((resolve, reject) => {
+      this.pendingRequests.set(requestId, { resolve, reject });
+
+      try {
+        this.child!.send(message);
+      } catch (error) {
+        this.pendingRequests.delete(requestId);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private handleResponse(message: MatterWorkerResponse): void {
+    const pending = this.pendingRequests.get(message.requestId);
+    if (!pending) {
+      return;
+    }
+
+    this.pendingRequests.delete(message.requestId);
+
+    if (!message.ok) {
+      pending.reject(new Error(message.error ?? "Matter worker request failed."));
+      return;
+    }
+
+    pending.resolve(message.result);
+  }
+
+  private handleTargetTriggered(targetId: string): void {
+    const target = this.targets.find((entry) => entry.id === targetId);
+    if (!target) {
+      return;
+    }
+
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.webContents.send("target-triggered", targetId);
       }
     }
+
+    openKioskWindow(target.url, target.durationSeconds * 1000)
+      .then(() =>
+        this.request({
+          type: "set-target-off",
+          requestId: 0,
+          targetId,
+        }).catch((error) => {
+          console.error(`[Matter] Failed to reset target "${targetId}" to off:`, error);
+        }),
+      )
+      .catch(console.error);
+  }
+
+  private rejectPendingRequests(error: Error): void {
+    for (const pending of this.pendingRequests.values()) {
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+  }
+
+  private cleanupChild(): void {
+    if (!this.child) {
+      this.status = STOPPED_STATUS;
+      return;
+    }
+
+    if (this.child.connected) {
+      this.child.disconnect();
+    }
+
+    if (!this.child.killed) {
+      this.child.kill();
+    }
+
+    this.child = null;
+    this.status = STOPPED_STATUS;
+    this.pendingRequests.clear();
   }
 }
 
-// ─── Singleton ───────────────────────────────────────────────────────────────
+function cloneTargets(targets: KioskTarget[]): KioskTarget[] {
+  return targets.map((target) => ({ ...target }));
+}
 
 let bridge: MatterBridge | null = null;
 

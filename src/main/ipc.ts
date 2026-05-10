@@ -25,7 +25,7 @@ export function registerIpcHandlers(): void {
     if (!bridge) {
       return { started: false, paired: false, qrCode: "", manualPairingCode: "" };
     }
-    return bridge.getStatus();
+    return await bridge.getStatus();
   });
 
   ipcMain.handle("reset-matter", async () => {

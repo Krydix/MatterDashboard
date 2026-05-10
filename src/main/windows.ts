@@ -68,7 +68,7 @@ export function openKioskWindow(url: string, durationMs: number): Promise<void> 
       width,
       height,
       frame: false,
-      kiosk: true,
+      fullscreen: true,
       alwaysOnTop: true,
       webPreferences: {
         nodeIntegration: false,
@@ -80,6 +80,12 @@ export function openKioskWindow(url: string, durationMs: number): Promise<void> 
     kiosk.loadURL(url).catch(() => {
       kiosk.destroy();
       resolve();
+    });
+
+    kiosk.webContents.on("before-input-event", (_event, input) => {
+      if (input.type === "keyDown" && input.key === "Escape" && !kiosk.isDestroyed()) {
+        kiosk.destroy();
+      }
     });
 
     const timer = setTimeout(() => {
