@@ -23,7 +23,10 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const kioskWindow = openKioskWindow(target.url, target.durationSeconds * 1000);
+    const kioskWindow = openKioskWindow(target.url, target.durationSeconds * 1000, {
+      restorePreviousApp: true,
+      useStartupRestoreTargetFallback: true,
+    });
     await kioskWindow.closed;
     app.quit();
     return;

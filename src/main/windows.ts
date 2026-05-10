@@ -1,7 +1,107 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { BrowserWindow, screen } from "electron";
 import path from "path";
 
 let settingsWindow: BrowserWindow | null = null;
+const execFileAsync = promisify(execFile);
+
+interface MacApplicationTarget {
+  processIdentifier: number;
+  bundleId: string | null;
+  name: string | null;
+}
+
+const FRONTMOST_MAC_APPLICATION_SCRIPT = `
+ObjC.import("AppKit");
+const app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+const bundleId = app.bundleIdentifier ? ObjC.unwrap(app.bundleIdentifier) : null;
+const name = app.localizedName ? ObjC.unwrap(app.localizedName) : null;
+JSON.stringify({
+  processIdentifier: Number(app.processIdentifier),
+  bundleId,
+  name,
+});
+`;
+
+const startupFrontmostMacApplicationPromise =
+  process.platform === "darwin" ? getFrontmostMacApplication() : Promise.resolve(null);
+
+function parseMacApplicationTarget(stdout: string): MacApplicationTarget | null {
+  const output = stdout.trim();
+  if (!output) {
+    return null;
+  }
+
+  const parsed = JSON.parse(output) as Record<string, unknown>;
+  const processIdentifier = parsed["processIdentifier"];
+  const bundleId = parsed["bundleId"];
+  const name = parsed["name"];
+
+  if (typeof processIdentifier !== "number") {
+    return null;
+  }
+
+  return {
+    processIdentifier,
+    bundleId: typeof bundleId === "string" && bundleId.length > 0 ? bundleId : null,
+    name: typeof name === "string" && name.length > 0 ? name : null,
+  };
+}
+
+async function getFrontmostMacApplication(): Promise<MacApplicationTarget | null> {
+  if (process.platform !== "darwin") {
+    return null;
+  }
+
+  try {
+    const { stdout } = await execFileAsync(
+      "osascript",
+      ["-l", "JavaScript", "-e", FRONTMOST_MAC_APPLICATION_SCRIPT],
+      { timeout: 1500 },
+    );
+    return parseMacApplicationTarget(stdout);
+  } catch {
+    return null;
+  }
+}
+
+async function getMacApplicationRestoreTarget(useStartupFallback: boolean): Promise<MacApplicationTarget | null> {
+  const currentTarget = await getFrontmostMacApplication();
+  if (currentTarget && currentTarget.processIdentifier !== process.pid) {
+    return currentTarget;
+  }
+
+  if (!useStartupFallback) {
+    return null;
+  }
+
+  const startupTarget = await startupFrontmostMacApplicationPromise;
+  if (startupTarget && startupTarget.processIdentifier !== process.pid) {
+    return startupTarget;
+  }
+
+  return null;
+}
+
+async function restoreMacApplication(target: MacApplicationTarget | null): Promise<void> {
+  if (process.platform !== "darwin" || !target) {
+    return;
+  }
+
+  try {
+    if (target.bundleId) {
+      await execFileAsync("open", ["-b", target.bundleId], { timeout: 1500 });
+      return;
+    }
+
+    if (target.name) {
+      await execFileAsync("open", ["-a", target.name], { timeout: 1500 });
+    }
+  } catch {
+    // Best-effort restore only.
+  }
+}
 
 async function applyLiquidGlass(win: BrowserWindow): Promise<void> {
   if (process.platform !== "darwin") return;
@@ -21,6 +121,12 @@ async function applyLiquidGlass(win: BrowserWindow): Promise<void> {
 export interface KioskWindowHandle {
   close: () => void;
   closed: Promise<void>;
+}
+
+export interface KioskWindowOptions {
+  onClosed?: () => void;
+  restorePreviousApp?: boolean;
+  useStartupRestoreTargetFallback?: boolean;
 }
 
 const RENDERER_URL =
@@ -84,10 +190,13 @@ export function showSettingsWindow(): void {
 export function openKioskWindow(
   url: string,
   durationMs: number,
-  options: { onClosed?: () => void } = {},
+  options: KioskWindowOptions = {},
 ): KioskWindowHandle {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height } = primaryDisplay.bounds;
+  const restoreTargetPromise = options.restorePreviousApp
+    ? getMacApplicationRestoreTarget(options.useStartupRestoreTargetFallback ?? false)
+    : Promise.resolve(null);
 
   const kiosk = new BrowserWindow({
     x: primaryDisplay.bounds.x,
@@ -127,8 +236,12 @@ export function openKioskWindow(
 
     kiosk.on("closed", () => {
       clearTimeout(timer);
-      options.onClosed?.();
-      resolve();
+      void restoreTargetPromise
+        .then((target) => restoreMacApplication(target))
+        .finally(() => {
+          options.onClosed?.();
+          resolve();
+        });
     });
   });
 
