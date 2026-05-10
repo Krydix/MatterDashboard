@@ -54,6 +54,15 @@ export function getNativeDaemonBundleDir(platform = process.platform, arch = pro
 }
 
 export function getNativeDaemonBundlePath(platform = process.platform, arch = process.arch): string {
+  if (platform === "darwin") {
+    return path.join(
+      getNativeDaemonBundleDir(platform, arch),
+      "matterkiosk-daemon.app",
+      "Contents",
+      "MacOS",
+      getNativeDaemonBinaryName(platform),
+    );
+  }
   return path.join(getNativeDaemonBundleDir(platform, arch), getNativeDaemonBinaryName(platform));
 }
 

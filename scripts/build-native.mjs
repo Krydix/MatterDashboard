@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -23,7 +23,15 @@ const builtBinaryPath =
   platform === "win32"
     ? path.join(buildDir, "Release", binaryName)
     : path.join(buildDir, binaryName);
-const stagedBinaryPath = path.join(outputDir, binaryName);
+
+// On macOS the binary is staged inside a .app bundle so the OS can associate an icon with it.
+const daemonAppBundleDir =
+  platform === "darwin"
+    ? path.join(outputDir, "matterkiosk-daemon.app", "Contents")
+    : null;
+const stagedBinaryDir =
+  daemonAppBundleDir ? path.join(daemonAppBundleDir, "MacOS") : outputDir;
+const stagedBinaryPath = path.join(stagedBinaryDir, binaryName);
 const chipBridgeArtifactsDir = path.join(buildDir, "chip-bridge-artifacts");
 const stagedChipBridgeBinaryPath = path.join(outputDir, chipBridgeBinaryName);
 const connectedhomeipPatchPath = path.join(projectRoot, "patches", "connectedhomeip", "matterkiosk-bridge.patch");
@@ -59,9 +67,52 @@ try {
     throw new Error(`Native daemon binary not found after build: ${builtBinaryPath}`);
   }
 
-  mkdirSync(outputDir, { recursive: true });
+  mkdirSync(stagedBinaryDir, { recursive: true });
   copyFileSync(builtBinaryPath, stagedBinaryPath);
   console.log(`Staged native daemon: ${path.relative(projectRoot, stagedBinaryPath)}`);
+
+  if (daemonAppBundleDir) {
+    // Write Info.plist for the daemon .app bundle so macOS shows the correct icon.
+    const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.matterkiosk.daemon</string>
+  <key>CFBundleName</key>
+  <string>MatterKiosk Daemon</string>
+  <key>CFBundleDisplayName</key>
+  <string>MatterKiosk Daemon</string>
+  <key>CFBundleExecutable</key>
+  <string>matterkiosk-daemon</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+`;
+    writeFileSync(path.join(daemonAppBundleDir, "Info.plist"), infoPlist, "utf8");
+
+    // Copy the app icon into the bundle resources.
+    const resourcesDir = path.join(daemonAppBundleDir, "Resources");
+    mkdirSync(resourcesDir, { recursive: true });
+    const icnsSource = path.join(projectRoot, "assets", "icon.icns");
+    if (existsSync(icnsSource)) {
+      copyFileSync(icnsSource, path.join(resourcesDir, "AppIcon.icns"));
+      console.log("Staged daemon .app bundle icon.");
+    } else {
+      console.warn("icon.icns not found at assets/icon.icns — daemon bundle will have no icon.");
+    }
+  }
 
   const chipBridgeTarget = getConnectedhomeipBridgeTarget(platform, arch);
   if (chipBridgeTarget !== null && existsSync(connectedhomeipRoot)) {

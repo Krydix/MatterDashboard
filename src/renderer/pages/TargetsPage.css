@@ -21,7 +21,7 @@
 }
 
 .target-card.triggered {
-  border-color: var(--success);
+  border-color: var(--control);
 }
 
 .target-card-left {
@@ -54,7 +54,7 @@
 }
 
 .trigger-badge {
-  color: var(--success);
+  color: var(--control);
   font-weight: 600;
   animation: pulse 1s ease-in-out infinite;
 }

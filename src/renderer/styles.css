@@ -1,16 +1,18 @@
 :root {
-  --bg: #1a1a2e;
-  --surface: #16213e;
-  --surface2: #0f3460;
-  --accent: #e94560;
-  --accent-hover: #c73652;
-  --text: #eaeaea;
-  --text-muted: #9a9ab0;
-  --border: #2a2a4a;
-  --success: #4ecca3;
-  --warning: #f5a623;
-  --radius: 8px;
-  --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  /* macOS dark mode system palette */
+  --bg: #1c1c1e;
+  --surface: #2c2c2e;
+  --surface2: #3a3a3c;
+  --accent: #0a84ff;
+  --accent-hover: #0071e3;
+  --control: #0a84ff;   /* on/off toggles, active indicators — same as accent for now */
+  --text: #f5f5f7;
+  --text-muted: #98989d;
+  --border: rgba(255, 255, 255, 0.1);
+  --success: #30d158;
+  --warning: #ff9f0a;
+  --radius: 10px;
+  --font: -apple-system, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
 }
 
 * {
@@ -28,6 +30,18 @@ body,
   font-family: var(--font);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* On macOS the Electron window is transparent so native glass shows through the sidebar.
+   Make html/body/root transparent — the main-content keeps the opaque bg. */
+body[data-platform="darwin"],
+body[data-platform="darwin"] #root {
+  background: transparent;
+}
+
+/* html paints the root background, must also be transparent on macOS */
+html:has(body[data-platform="darwin"]) {
+  background: transparent;
 }
 
 a {
@@ -58,15 +72,15 @@ button.secondary {
   color: var(--text);
 }
 button.secondary:hover {
-  background: #1a4a80;
+  background: #48484a;
 }
 
 button.danger {
-  background: #7a1a2e;
-  color: #fff;
+  background: rgba(255, 59, 48, 0.25);
+  color: #ff453a;
 }
 button.danger:hover {
-  background: #9a1a3e;
+  background: rgba(255, 59, 48, 0.38);
 }
 
 button.ghost {
@@ -139,7 +153,7 @@ label {
   transition: transform 0.2s, background 0.2s;
 }
 .toggle input:checked + .toggle-slider {
-  background: var(--success);
+  background: var(--control);
 }
 .toggle input:checked + .toggle-slider::before {
   transform: translateX(18px);
