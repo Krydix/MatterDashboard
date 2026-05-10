@@ -1,0 +1,467 @@
+diff --git a/examples/bridge-app/linux/main.cpp b/examples/bridge-app/linux/main.cpp
+index 6141f660..8b08262c 100644
+--- a/examples/bridge-app/linux/main.cpp
++++ b/examples/bridge-app/linux/main.cpp
+@@ -17,7 +17,10 @@
+  */
+ 
+ #include <AppMain.h>
++#include <algorithm>
++#include <array>
+ #include <cstdint>
++#include <memory>
+ #include <platform/CHIPDeviceLayer.h>
+ #include <platform/PlatformManager.h>
+ 
+@@ -38,6 +41,7 @@
+ #include <lib/support/CHIPMem.h>
+ #include <lib/support/ZclString.h>
+ #include <platform/CommissionableDataProvider.h>
++#include <setup_payload/OnboardingCodesUtil.h>
+ #include <setup_payload/QRCodeSetupPayloadGenerator.h>
+ #include <setup_payload/SetupPayload.h>
+ 
+@@ -53,6 +57,8 @@
+ #include <cassert>
+ #include <iostream>
+ #include <string>
++#include <unordered_map>
++#include <unordered_set>
+ #include <vector>
+ 
+ using namespace chip;
+@@ -152,6 +158,19 @@ DECLARE_DYNAMIC_CLUSTER(OnOff::Id, onOffAttrs, ZAP_CLUSTER_MASK(SERVER), onOffIn
+ 
+ // Declare Bridged Light endpoint
+ DECLARE_DYNAMIC_ENDPOINT(bridgedLightEndpoint, bridgedLightClusters);
++
++struct MatterKioskBridgeDevice
++{
++    std::string targetId;
++    std::unique_ptr<DeviceOnOff> device;
++    std::array<DataVersion, MATTER_ARRAY_SIZE(bridgedLightClusters)> dataVersions{};
++};
++
++bool gMatterKioskMode = false;
++std::vector<std::unique_ptr<MatterKioskBridgeDevice>> gMatterKioskDevices;
++std::unordered_map<std::string, MatterKioskBridgeDevice *> gMatterKioskDevicesByTargetId;
++std::unordered_map<DeviceOnOff *, MatterKioskBridgeDevice *> gMatterKioskDevicesByDevice;
++
+ DataVersion gLight1DataVersions[MATTER_ARRAY_SIZE(bridgedLightClusters)];
+ DataVersion gLight2DataVersions[MATTER_ARRAY_SIZE(bridgedLightClusters)];
+ 
+@@ -405,11 +424,14 @@ void ScheduleReportingCallback(Device * dev, ClusterId cluster, AttributeId attr
+ }
+ } // anonymous namespace
+ 
++void EmitMatterKioskOnOffEvent(DeviceOnOff * dev);
++
+ void HandleDeviceOnOffStatusChanged(DeviceOnOff * dev, DeviceOnOff::Changed_t itemChangedMask)
+ {
+     if (itemChangedMask & DeviceOnOff::kChanged_OnOff)
+     {
+         ScheduleReportingCallback(dev, OnOff::Id, OnOff::Attributes::OnOff::Id);
++        EmitMatterKioskOnOffEvent(dev);
+     }
+ }
+ 
+@@ -675,6 +697,223 @@ const EmberAfDeviceType gComposedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_
+ const EmberAfDeviceType gBridgedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_SENSOR, DEVICE_VERSION_DEFAULT },
+                                                             { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT } };
+ 
++std::string MatterKioskJsonString(const Json::Value & value)
++{
++    Json::StreamWriterBuilder builder;
++    builder["indentation"] = "";
++    return Json::writeString(builder, value);
++}
++
++void WriteMatterKioskMessage(const Json::Value & value)
++{
++    if (sChipNamedPipeCommands.OutPath().empty())
++    {
++        return;
++    }
++
++    sChipNamedPipeCommands.WriteToOutPipe(MatterKioskJsonString(value));
++}
++
++uint64_t MatterKioskHashTargetId(const std::string & targetId)
++{
++    constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ULL;
++    constexpr uint64_t kFnvPrime       = 1099511628211ULL;
++
++    uint64_t hash = kFnvOffsetBasis;
++    for (char ch : targetId)
++    {
++        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(ch));
++        hash *= kFnvPrime;
++    }
++    return hash;
++}
++
++std::string MatterKioskUniqueIdForTarget(const std::string & targetId)
++{
++    char buffer[Device::kDeviceUniqueIdSize + 1] = { 0 };
++    snprintf(buffer, sizeof(buffer), "MK-%016llx", static_cast<unsigned long long>(MatterKioskHashTargetId(targetId)));
++    return std::string(buffer);
++}
++
++MatterKioskBridgeDevice * FindMatterKioskDeviceByTargetId(const std::string & targetId)
++{
++    auto it = gMatterKioskDevicesByTargetId.find(targetId);
++    return it == gMatterKioskDevicesByTargetId.end() ? nullptr : it->second;
++}
++
++MatterKioskBridgeDevice * FindMatterKioskDeviceByBridge(DeviceOnOff * dev)
++{
++    auto it = gMatterKioskDevicesByDevice.find(dev);
++    return it == gMatterKioskDevicesByDevice.end() ? nullptr : it->second;
++}
++
++Json::Value BuildMatterKioskStatusResult()
++{
++    Json::Value result(Json::objectValue);
++    result["started"] = true;
++    result["paired"]  = Server::GetInstance().GetFabricTable().FabricCount() > 0;
++
++    char qrCodeBuffer[256]        = { 0 };
++    chip::MutableCharSpan qrCode  = chip::MutableCharSpan(qrCodeBuffer, sizeof(qrCodeBuffer));
++    if (GetQRCode(qrCode, LinuxDeviceOptions::GetInstance().payload) == CHIP_NO_ERROR)
++    {
++        result["qrCode"] = std::string(qrCode.data(), qrCode.size());
++    }
++    else
++    {
++        result["qrCode"] = "";
++    }
++
++    char manualBuffer[64]                    = { 0 };
++    chip::MutableCharSpan manualPairingCode  = chip::MutableCharSpan(manualBuffer, sizeof(manualBuffer));
++    if (GetManualPairingCode(manualPairingCode, LinuxDeviceOptions::GetInstance().payload) == CHIP_NO_ERROR)
++    {
++        result["manualPairingCode"] = std::string(manualPairingCode.data(), manualPairingCode.size());
++    }
++    else
++    {
++        result["manualPairingCode"] = "";
++    }
++
++    return result;
++}
++
++MatterKioskBridgeDevice * EnsureMatterKioskDevice(const std::string & targetId, const std::string & targetName)
++{
++    if (auto * existing = FindMatterKioskDeviceByTargetId(targetId))
++    {
++        existing->device->SetName(targetName.c_str());
++        return existing;
++    }
++
++    auto entry      = std::make_unique<MatterKioskBridgeDevice>();
++    entry->targetId = targetId;
++    entry->device   = std::make_unique<DeviceOnOff>(targetName.c_str(), "MatterKiosk");
++    entry->device->SetChangeCallback(&HandleDeviceOnOffStatusChanged);
++
++    const std::string uniqueId = MatterKioskUniqueIdForTarget(targetId);
++    entry->device->SetUniqueId(uniqueId.c_str());
++
++#if !CHIP_CONFIG_USE_ENDPOINT_UNIQUE_ID
++    int index = AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
++                                  Span<DataVersion>(entry->dataVersions), 1);
++#else
++    int index = AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
++                                  Span<DataVersion>(entry->dataVersions), chip::CharSpan::fromCharString(uniqueId.c_str()), 1);
++#endif
++
++    VerifyOrReturnValue(index >= 0, nullptr);
++
++    MatterKioskBridgeDevice * raw = entry.get();
++    gMatterKioskDevicesByTargetId.emplace(targetId, raw);
++    gMatterKioskDevicesByDevice.emplace(raw->device.get(), raw);
++    gMatterKioskDevices.push_back(std::move(entry));
++    return raw;
++}
++
++void RemoveMatterKioskDevice(const std::string & targetId)
++{
++    MatterKioskBridgeDevice * existing = FindMatterKioskDeviceByTargetId(targetId);
++    VerifyOrReturn(existing != nullptr);
++
++    gMatterKioskDevicesByDevice.erase(existing->device.get());
++    gMatterKioskDevicesByTargetId.erase(targetId);
++    RemoveDeviceEndpoint(existing->device.get());
++
++    auto newEnd = std::remove_if(gMatterKioskDevices.begin(), gMatterKioskDevices.end(),
++                                 [&](const std::unique_ptr<MatterKioskBridgeDevice> & entry) {
++                                     return entry.get() == existing;
++                                 });
++    gMatterKioskDevices.erase(newEnd, gMatterKioskDevices.end());
++}
++
++void SyncMatterKioskTargets(const Json::Value & targets)
++{
++    std::unordered_map<std::string, std::string> desiredTargets;
++
++    if (targets.isArray())
++    {
++        for (const auto & entry : targets)
++        {
++            if (!entry.isObject())
++            {
++                continue;
++            }
++
++            if (!entry.isMember("id") || !entry["id"].isString())
++            {
++                continue;
++            }
++
++            const bool enabled = !entry.isMember("enabled") || entry["enabled"].asBool();
++            const std::string targetId = entry["id"].asString();
++            if (!enabled)
++            {
++                continue;
++            }
++
++            const std::string targetName = entry.isMember("name") && entry["name"].isString() ? entry["name"].asString() : targetId;
++            desiredTargets[targetId]     = targetName;
++            VerifyOrDie(EnsureMatterKioskDevice(targetId, targetName) != nullptr);
++        }
++    }
++
++    std::vector<std::string> targetIdsToRemove;
++    for (const auto & existing : gMatterKioskDevices)
++    {
++        if (desiredTargets.find(existing->targetId) == desiredTargets.end())
++        {
++            targetIdsToRemove.push_back(existing->targetId);
++        }
++    }
++
++    for (const auto & targetId : targetIdsToRemove)
++    {
++        RemoveMatterKioskDevice(targetId);
++    }
++}
++
++bool SetMatterKioskTargetOff(const std::string & targetId)
++{
++    MatterKioskBridgeDevice * existing = FindMatterKioskDeviceByTargetId(targetId);
++    VerifyOrReturnValue(existing != nullptr, false);
++    existing->device->SetOnOff(false);
++    return true;
++}
++
++void WriteMatterKioskResponse(int requestId, bool ok, const Json::Value * result, const std::string & error)
++{
++    Json::Value response(Json::objectValue);
++    response["type"] = "response";
++    if (requestId >= 0)
++    {
++        response["requestId"] = requestId;
++    }
++    response["ok"] = ok;
++    if (result != nullptr)
++    {
++        response["result"] = *result;
++    }
++    if (!ok)
++    {
++        response["error"] = error;
++    }
++    WriteMatterKioskMessage(response);
++}
++
++void EmitMatterKioskOnOffEvent(DeviceOnOff * dev)
++{
++    VerifyOrReturn(gMatterKioskMode);
++
++    MatterKioskBridgeDevice * entry = FindMatterKioskDeviceByBridge(dev);
++    VerifyOrReturn(entry != nullptr);
++
++    Json::Value event(Json::objectValue);
++    event["type"]     = dev->IsOn() ? "target-triggered" : "target-turned-off";
++    event["targetId"] = entry->targetId;
++    WriteMatterKioskMessage(event);
++}
++
+ #define POLL_INTERVAL_MS (100)
+ uint8_t poll_prescale = 0;
+ 
+@@ -839,6 +1078,35 @@ void ApplicationInit()
+ {
+     // Clear out the device database
+     memset(gDevices, 0, sizeof(gDevices));
++    gMatterKioskDevices.clear();
++    gMatterKioskDevicesByTargetId.clear();
++    gMatterKioskDevicesByDevice.clear();
++    gMatterKioskMode = std::string(LinuxDeviceOptions::GetInstance().app_pipe_out).empty() == false;
++
++    // Set starting endpoint id where dynamic endpoints will be assigned, which
++    // will be the next consecutive endpoint id after the last fixed endpoint.
++    gFirstDynamicEndpointId = static_cast<chip::EndpointId>(
++        static_cast<int>(emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1))) + 1);
++    gCurrentEndpointId = gFirstDynamicEndpointId;
++
++    // Disable last fixed endpoint, which is used as a placeholder for all of the
++    // supported clusters so that ZAP will generated the requisite code.
++    emberAfEndpointEnableDisable(emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1)), false);
++
++    if (gMatterKioskMode)
++    {
++        const std::string path     = std::string(LinuxDeviceOptions::GetInstance().app_pipe);
++        const std::string pathOut  = std::string(LinuxDeviceOptions::GetInstance().app_pipe_out);
++        if ((!path.empty()) && (!pathOut.empty()) &&
++            (sChipNamedPipeCommands.Start(path, pathOut, &sBridgeCommandDelegate) != CHIP_NO_ERROR))
++        {
++            ChipLogError(NotSpecified, "Failed to start MatterKiosk named pipe commands");
++            TEMPORARY_RETURN_IGNORED sChipNamedPipeCommands.Stop();
++        }
++
++        AttributeAccessInterfaceRegistry::Instance().Register(&gPowerAttrAccess);
++        return;
++    }
+ 
+     // Setup Mock Devices
+     Light1.SetReachable(true);
+@@ -870,16 +1138,6 @@ void ApplicationInit()
+     ComposedTempSensor2.SetChangeCallback(&HandleDeviceTempSensorStatusChanged);
+     ComposedPowerSource.SetChangeCallback(&HandleDevicePowerSourceStatusChanged);
+ 
+-    // Set starting endpoint id where dynamic endpoints will be assigned, which
+-    // will be the next consecutive endpoint id after the last fixed endpoint.
+-    gFirstDynamicEndpointId = static_cast<chip::EndpointId>(
+-        static_cast<int>(emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1))) + 1);
+-    gCurrentEndpointId = gFirstDynamicEndpointId;
+-
+-    // Disable last fixed endpoint, which is used as a placeholder for all of the
+-    // supported clusters so that ZAP will generated the requisite code.
+-    emberAfEndpointEnableDisable(emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1)), false);
+-
+     // Add light 1 -> will be mapped to ZCL endpoints 3
+ #if !CHIP_CONFIG_USE_ENDPOINT_UNIQUE_ID
+     AddDeviceEndpoint(&Light1, &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
+@@ -1016,7 +1274,9 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
+         return nullptr;
+     }
+ 
+-    if (!value.isMember("Name") || !value["Name"].isString())
++    const bool hasLegacyName = value.isMember("Name") && value["Name"].isString();
++    const bool hasRuntimeType = value.isMember("type") && value["type"].isString();
++    if (!hasLegacyName && !hasRuntimeType)
+     {
+         ChipLogError(NotSpecified, "Bridge App: Invalid JSON command received: command name is missing");
+         return nullptr;
+@@ -1028,9 +1288,61 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
+ void BridgeAppCommandHandler::HandleCommand(intptr_t context)
+ {
+     auto * self      = reinterpret_cast<BridgeAppCommandHandler *>(context);
+-    std::string name = self->mJsonValue["Name"].asString();
++    if (self == nullptr)
++    {
++        ChipLogError(NotSpecified, "Invalid bridge app command context");
++        return;
++    }
++
++    if (self->mJsonValue.empty())
++    {
++        ChipLogError(NotSpecified, "Invalid JSON event command received");
++        Platform::Delete(self);
++        return;
++    }
+ 
+-    VerifyOrExit(!self->mJsonValue.empty(), ChipLogError(NotSpecified, "Invalid JSON event command received"));
++    if (self->mJsonValue.isMember("type") && self->mJsonValue["type"].isString())
++    {
++        const std::string type = self->mJsonValue["type"].asString();
++        const int requestId    = self->mJsonValue.get("requestId", -1).asInt();
++        Json::Value result(Json::objectValue);
++        bool ok            = true;
++        std::string error;
++
++        if (type == "get-status")
++        {
++            result = BuildMatterKioskStatusResult();
++        }
++        else if (type == "sync-targets")
++        {
++            SyncMatterKioskTargets(self->mJsonValue["targets"]);
++            result = BuildMatterKioskStatusResult();
++        }
++        else if (type == "set-target-off")
++        {
++            const std::string targetId = self->mJsonValue.get("targetId", "").asString();
++            if (targetId.empty() || !SetMatterKioskTargetOff(targetId))
++            {
++                ok    = false;
++                error = "Unknown targetId";
++            }
++            else
++            {
++                result = BuildMatterKioskStatusResult();
++            }
++        }
++        else
++        {
++            ok    = false;
++            error = "Unsupported command";
++        }
++
++        WriteMatterKioskResponse(requestId, ok, ok ? &result : nullptr, error);
++        Platform::Delete(self);
++        return;
++    }
++
++    std::string name = self->mJsonValue["Name"].asString();
+ 
+     if (name == "SimulateConfigurationVersionChange")
+     {
+@@ -1042,7 +1354,6 @@ void BridgeAppCommandHandler::HandleCommand(intptr_t context)
+         VerifyOrDie(false && "Named pipe command not supported, see log above.");
+     }
+ 
+-exit:
+     Platform::Delete(self);
+ }
+ 
+diff --git a/examples/platform/linux/NamedPipeCommands.cpp b/examples/platform/linux/NamedPipeCommands.cpp
+index a81912dc..9983d433 100644
+--- a/examples/platform/linux/NamedPipeCommands.cpp
++++ b/examples/platform/linux/NamedPipeCommands.cpp
+@@ -162,14 +162,30 @@ void * NamedPipeCommands::EventCommandListenerTask(void * arg)
+             break;
+         }
+ 
+-        ssize_t readBytes = read(fd, readbuf, kChipEventCmdBufSize);
+-        if (readBytes > 0)
++        std::string payload;
++        ssize_t readBytes = 0;
++        while ((readBytes = read(fd, readbuf, sizeof(readbuf))) > 0)
+         {
+-            readbuf[readBytes - 1] = '\0';
+-            ChipLogProgress(NotSpecified, "Received payload: \"%s\"", readbuf);
++            payload.append(readbuf, static_cast<size_t>(readBytes));
++
++            if (payload.find('\n') != std::string::npos)
++            {
++                break;
++            }
++        }
++
++        if (!payload.empty())
++        {
++            const size_t newline = payload.find('\n');
++            if (newline != std::string::npos)
++            {
++                payload.resize(newline);
++            }
++
++            ChipLogProgress(NotSpecified, "Received payload: \"%s\"", payload.c_str());
+ 
+             // Process the received command request from event fifo
+-            self->mDelegate->OnEventCommandReceived(readbuf);
++            self->mDelegate->OnEventCommandReceived(payload.c_str());
+         }
+ 
+         close(fd);
