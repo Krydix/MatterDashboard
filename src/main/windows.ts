@@ -3,6 +3,11 @@ import path from "path";
 
 let settingsWindow: BrowserWindow | null = null;
 
+export interface KioskWindowHandle {
+  close: () => void;
+  closed: Promise<void>;
+}
+
 const RENDERER_URL =
   process.env["VITE_DEV_SERVER_URL"] ?? `file://${path.join(__dirname, "../renderer/index.html")}`;
 
@@ -55,50 +60,60 @@ export function showSettingsWindow(): void {
 
 /**
  * Open a fullscreen kiosk window for the given URL, then auto-close after durationMs.
- * Returns a promise that resolves when the window closes.
+ * Returns a handle that can also close the window early.
  */
-export function openKioskWindow(url: string, durationMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width, height } = primaryDisplay.bounds;
+export function openKioskWindow(
+  url: string,
+  durationMs: number,
+  options: { onClosed?: () => void } = {},
+): KioskWindowHandle {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.bounds;
 
-    const kiosk = new BrowserWindow({
-      x: primaryDisplay.bounds.x,
-      y: primaryDisplay.bounds.y,
-      width,
-      height,
-      frame: false,
-      fullscreen: true,
-      alwaysOnTop: true,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true, // fully sandboxed — loads external URLs
-      },
-    });
+  const kiosk = new BrowserWindow({
+    x: primaryDisplay.bounds.x,
+    y: primaryDisplay.bounds.y,
+    width,
+    height,
+    frame: false,
+    fullscreen: true,
+    alwaysOnTop: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true, // fully sandboxed — loads external URLs
+    },
+  });
 
-    kiosk.loadURL(url).catch(() => {
+  const close = () => {
+    if (!kiosk.isDestroyed()) {
       kiosk.destroy();
-      resolve();
+    }
+  };
+
+  const closed = new Promise<void>((resolve) => {
+    kiosk.loadURL(url).catch(() => {
+      close();
     });
 
     kiosk.webContents.on("before-input-event", (_event, input) => {
-      if (input.type === "keyDown" && input.key === "Escape" && !kiosk.isDestroyed()) {
-        kiosk.destroy();
+      if (input.type === "keyDown" && input.key === "Escape") {
+        close();
       }
     });
 
     const timer = setTimeout(() => {
-      if (!kiosk.isDestroyed()) {
-        kiosk.destroy();
-      }
+      close();
     }, durationMs);
 
     kiosk.on("closed", () => {
       clearTimeout(timer);
+      options.onClosed?.();
       resolve();
     });
   });
+
+  return { close, closed };
 }
 
 export function destroySettingsWindow(): void {

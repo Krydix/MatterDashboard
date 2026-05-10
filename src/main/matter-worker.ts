@@ -30,7 +30,7 @@ type WorkerResponse = {
 };
 
 type WorkerEvent = {
-  type: "target-triggered";
+  type: "target-triggered" | "target-turned-off";
   targetId: string;
 };
 
@@ -147,6 +147,7 @@ class MatterBridgeWorker {
           nodeLabel: target.name,
           productName: target.name,
           productLabel: target.name,
+          uniqueId: getTargetUniqueId(target.id),
         });
       } catch {
         // Best effort only.
@@ -236,6 +237,7 @@ class MatterBridgeWorker {
           productName: target.name,
           productLabel: target.name,
           serialNumber: `mk-${target.id.substring(0, 25)}`,
+          uniqueId: getTargetUniqueId(target.id),
           reachable: true,
         },
       },
@@ -249,6 +251,7 @@ class MatterBridgeWorker {
         sendWorkerEvent({ type: "target-triggered", targetId: target.id });
       } else {
         console.log(`[Matter] Target "${target.name}" turned OFF`);
+        sendWorkerEvent({ type: "target-turned-off", targetId: target.id });
       }
     });
 
@@ -262,7 +265,7 @@ class MatterBridgeWorker {
       return;
     }
 
-    await entry.endpoint.close();
+    await entry.endpoint.delete();
     this.endpoints.delete(targetId);
     console.log(`[Matter] Removed endpoint for target id "${targetId}"`);
   }
@@ -270,6 +273,10 @@ class MatterBridgeWorker {
 
 function cloneTargets(targets: KioskTarget[]): KioskTarget[] {
   return targets.map((target) => ({ ...target }));
+}
+
+function getTargetUniqueId(targetId: string): string {
+  return targetId.replace(/-/g, "").slice(0, 32);
 }
 
 function sendWorkerEvent(event: WorkerEvent): void {

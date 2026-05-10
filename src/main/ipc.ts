@@ -44,7 +44,7 @@ export function registerIpcHandlers(): void {
     const config = getConfig();
     const target = config.targets.find((t) => t.id === targetId);
     if (target) {
-      await openKioskWindow(target.url, target.durationSeconds * 1000);
+      await openKioskWindow(target.url, target.durationSeconds * 1000).closed;
     }
   });
 

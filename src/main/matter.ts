@@ -2,7 +2,7 @@ import { app, BrowserWindow } from "electron";
 import { ChildProcess, spawn } from "node:child_process";
 import path from "node:path";
 import { KioskTarget, MatterStatus } from "../shared/types";
-import { openKioskWindow } from "./windows";
+import { KioskWindowHandle, openKioskWindow } from "./windows";
 
 type MatterWorkerCommand =
   | { type: "start"; requestId: number; storagePath: string; targets: KioskTarget[] }
@@ -20,10 +20,15 @@ type MatterWorkerResponse = {
   error?: string;
 };
 
-type MatterWorkerEvent = {
-  type: "target-triggered";
-  targetId: string;
-};
+type MatterWorkerEvent =
+  | {
+      type: "target-triggered";
+      targetId: string;
+    }
+  | {
+      type: "target-turned-off";
+      targetId: string;
+    };
 
 const STOPPED_STATUS: MatterStatus = {
   started: false,
@@ -46,6 +51,7 @@ export class MatterBridge {
     }
   >();
   private stopping = false;
+  private activeKioskWindows = new Map<string, KioskWindowHandle>();
 
   constructor(storagePath: string) {
     this.storagePath = storagePath;
@@ -163,10 +169,16 @@ export class MatterBridge {
 
       if (message.type === "target-triggered") {
         this.handleTargetTriggered(message.targetId);
+        return;
+      }
+
+      if (message.type === "target-turned-off") {
+        this.handleTargetTurnedOff(message.targetId);
       }
     });
 
     this.child.once("error", (error) => {
+      this.closeActiveKioskWindows();
       this.rejectPendingRequests(error);
       this.status = STOPPED_STATUS;
       console.error("[Matter] Worker process failed:", error);
@@ -181,6 +193,7 @@ export class MatterBridge {
         console.error(error.message);
       }
 
+      this.closeActiveKioskWindows();
       this.rejectPendingRequests(error);
       this.child = null;
       this.status = STOPPED_STATUS;
@@ -229,23 +242,45 @@ export class MatterBridge {
       return;
     }
 
+    if (this.activeKioskWindows.has(targetId)) {
+      return;
+    }
+
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.webContents.send("target-triggered", targetId);
       }
     }
 
-    openKioskWindow(target.url, target.durationSeconds * 1000)
-      .then(() =>
-        this.request({
-          type: "set-target-off",
-          requestId: 0,
-          targetId,
-        }).catch((error) => {
-          console.error(`[Matter] Failed to reset target "${targetId}" to off:`, error);
-        }),
-      )
-      .catch(console.error);
+    const kioskWindow = openKioskWindow(target.url, target.durationSeconds * 1000, {
+      onClosed: () => {
+        this.activeKioskWindows.delete(targetId);
+        void this.setTargetOff(targetId);
+      },
+    });
+
+    this.activeKioskWindows.set(targetId, kioskWindow);
+    void kioskWindow.closed.catch(console.error);
+  }
+
+  private handleTargetTurnedOff(targetId: string): void {
+    this.activeKioskWindows.get(targetId)?.close();
+  }
+
+  private async setTargetOff(targetId: string): Promise<void> {
+    if (this.stopping || !this.child || !this.child.connected) {
+      return;
+    }
+
+    try {
+      await this.request({
+        type: "set-target-off",
+        requestId: 0,
+        targetId,
+      });
+    } catch (error) {
+      console.error(`[Matter] Failed to reset target "${targetId}" to off:`, error);
+    }
   }
 
   private rejectPendingRequests(error: Error): void {
@@ -255,7 +290,16 @@ export class MatterBridge {
     this.pendingRequests.clear();
   }
 
+  private closeActiveKioskWindows(): void {
+    for (const kioskWindow of this.activeKioskWindows.values()) {
+      kioskWindow.close();
+    }
+    this.activeKioskWindows.clear();
+  }
+
   private cleanupChild(): void {
+    this.closeActiveKioskWindows();
+
     if (!this.child) {
       this.status = STOPPED_STATUS;
       return;
