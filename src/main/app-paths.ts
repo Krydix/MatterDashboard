@@ -45,12 +45,20 @@ export function getNativeDaemonBinaryName(platform = process.platform): string {
   return platform === "win32" ? "matterkiosk-daemon.exe" : "matterkiosk-daemon";
 }
 
+export function getNativeChipBridgeBinaryName(platform = process.platform): string {
+  return platform === "win32" ? "chip-bridge-app.exe" : "chip-bridge-app";
+}
+
 export function getNativeDaemonBundleDir(platform = process.platform, arch = process.arch): string {
   return path.join("native", `${platform}-${arch}`);
 }
 
 export function getNativeDaemonBundlePath(platform = process.platform, arch = process.arch): string {
   return path.join(getNativeDaemonBundleDir(platform, arch), getNativeDaemonBinaryName(platform));
+}
+
+export function getNativeChipBridgeBundlePath(platform = process.platform, arch = process.arch): string {
+  return path.join(getNativeDaemonBundleDir(platform, arch), getNativeChipBridgeBinaryName(platform));
 }
 
 export function getLaunchAgentPath(): string {

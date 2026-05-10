@@ -11,6 +11,8 @@ import {
   DAEMON_LAUNCH_AGENT_LABEL,
   getDaemonPidPath,
   getDaemonSocketPath,
+  getNativeChipBridgeBinaryName,
+  getNativeChipBridgeBundlePath,
   getNativeDaemonBinaryName,
   getNativeDaemonBundlePath,
   getLaunchAgentPath,
@@ -166,12 +168,22 @@ function cleanupDaemonArtifacts(): void {
 }
 
 function getDaemonLaunchConfig(): { executable: string; args: string[]; env: NodeJS.ProcessEnv } {
+  const chipBridgeBinaryPath = findNativeChipBridgeBinaryPath();
+  const runtimeKind = process.env["MATTERKIOSK_MATTER_RUNTIME"] ?? (chipBridgeBinaryPath ? "chip" : "worker");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    MATTERKIOSK_MATTER_RUNTIME: runtimeKind,
     MATTERKIOSK_ELECTRON_EXECUTABLE: process.execPath,
-    MATTERKIOSK_WORKER_EXECUTABLE: process.execPath,
-    MATTERKIOSK_WORKER_SCRIPT: getMatterWorkerScriptPath(),
   };
+
+  if (chipBridgeBinaryPath) {
+    env["MATTERKIOSK_CHIP_BRIDGE_BINARY"] = chipBridgeBinaryPath;
+  }
+
+  if (runtimeKind === "worker") {
+    env["MATTERKIOSK_WORKER_EXECUTABLE"] = process.execPath;
+    env["MATTERKIOSK_WORKER_SCRIPT"] = getMatterWorkerScriptPath();
+  }
 
   if (!supportsMatterNativeCrypto()) {
     env["MATTER_NODEJS_CRYPTO"] = "false";
@@ -273,6 +285,8 @@ function createLaunchAgentPlist(launch: {
   const stderrPath = path.join(getRuntimeDir(), "daemon.stderr.log");
   const envEntries = Object.entries({
     MATTER_NODEJS_CRYPTO: launch.env["MATTER_NODEJS_CRYPTO"],
+    MATTERKIOSK_MATTER_RUNTIME: launch.env["MATTERKIOSK_MATTER_RUNTIME"],
+    MATTERKIOSK_CHIP_BRIDGE_BINARY: launch.env["MATTERKIOSK_CHIP_BRIDGE_BINARY"],
     MATTERKIOSK_ELECTRON_EXECUTABLE: launch.env["MATTERKIOSK_ELECTRON_EXECUTABLE"],
     MATTERKIOSK_UI_APP_PATH: launch.env["MATTERKIOSK_UI_APP_PATH"],
     MATTERKIOSK_WORKER_EXECUTABLE: launch.env["MATTERKIOSK_WORKER_EXECUTABLE"],
@@ -351,4 +365,29 @@ function getNativeDaemonBinaryPath(): string {
   throw new Error(
     `Native Matter daemon binary not found. Expected one of: ${assetBinary}, ${buildBinary}`,
   );
+}
+
+function findNativeChipBridgeBinaryPath(): string | null {
+  const packagedBinary = path.join(process.resourcesPath, getNativeChipBridgeBundlePath());
+  if (app.isPackaged) {
+    return existsSync(packagedBinary) ? packagedBinary : null;
+  }
+
+  const assetBinary = path.resolve(process.cwd(), "assets", getNativeChipBridgeBundlePath());
+  if (existsSync(assetBinary)) {
+    return assetBinary;
+  }
+
+  const buildBinary = path.resolve(
+    process.cwd(),
+    "native",
+    "daemon",
+    "build",
+    `${process.platform}-${process.arch}`,
+    "chip-bridge-artifacts",
+    `${process.platform}-${process.arch}-bridge-clang-boringssl`,
+    getNativeChipBridgeBinaryName(),
+  );
+
+  return existsSync(buildBinary) ? buildBinary : null;
 }
