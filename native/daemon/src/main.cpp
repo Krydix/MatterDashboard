@@ -1,3 +1,4 @@
+#include "matter_runtime.hpp"
 #include "mini_json.hpp"
 
 #include <atomic>
@@ -13,6 +14,7 @@
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -43,34 +45,10 @@ namespace fs = std::filesystem;
 
 namespace {
 
-struct KioskTarget {
-  std::string id;
-  std::string name;
-  std::string url;
-  int durationSeconds = 30;
-  bool enabled = true;
-};
-
 struct AppConfig {
   std::vector<KioskTarget> targets;
   bool launchAtLogin = false;
   bool backgroundDaemonEnabled = false;
-};
-
-struct MatterStatus {
-  bool started = false;
-  bool paired = false;
-  std::string qrCode;
-  std::string manualPairingCode;
-};
-
-struct PendingResponse {
-  std::mutex mutex;
-  std::condition_variable cv;
-  bool ready = false;
-  bool ok = false;
-  JsonValue result;
-  std::string error;
 };
 
 struct ChildProcess {
@@ -540,289 +518,12 @@ bool try_ping_existing_daemon(const fs::path &socketPath) {
 }
 #endif
 
-class MatterWorkerClient {
- public:
-  using EventHandler = std::function<void(const std::string &)>;
-
-  MatterWorkerClient() = default;
-  ~MatterWorkerClient() { shutdown(); }
-
-  void set_target_triggered_handler(EventHandler handler) { onTargetTriggered_ = std::move(handler); }
-  void set_target_turned_off_handler(EventHandler handler) { onTargetTurnedOff_ = std::move(handler); }
-
-  MatterStatus start(const std::vector<KioskTarget> &targets) {
-    ensure_worker_started();
-    return send_status_request(JsonValue::Object{
-      {"type", "start"},
-      {"storagePath", matter_storage_path().string()},
-      {"targets", targets_to_json(targets)},
-    });
-  }
-
-  MatterStatus sync_targets(const std::vector<KioskTarget> &targets) {
-    if (!child_.running()) {
-      return start(targets);
-    }
-    return send_status_request(JsonValue::Object{
-      {"type", "sync-targets"},
-      {"targets", targets_to_json(targets)},
-    });
-  }
-
-  MatterStatus get_status() {
-    if (!child_.running()) {
-      return status_;
-    }
-    status_ = send_status_request(JsonValue::Object{{"type", "get-status"}});
-    return status_;
-  }
-
-  MatterStatus reset() {
-    if (!child_.running()) {
-      return status_;
-    }
-    status_ = send_status_request(JsonValue::Object{{"type", "reset"}});
-    return status_;
-  }
-
-  void set_target_off(const std::string &targetId) {
-    if (!child_.running()) {
-      return;
-    }
-    send_command(JsonValue::Object{{"type", "set-target-off"}, {"targetId", targetId}});
-  }
-
-  void stop() {
-    if (!child_.running()) {
-      return;
-    }
-    try {
-      send_command(JsonValue::Object{{"type", "stop"}});
-    } catch (...) {
-    }
-    shutdown();
-    status_ = {};
-  }
-
- private:
-  void ensure_worker_started() {
-    if (child_.running()) {
-      return;
-    }
-
-#if defined(__APPLE__) || defined(__linux__)
-    child_ = spawn_child_with_stdio(worker_executable_path(), {worker_script_path().string()}, worker_environment());
-    readerThread_ = std::thread([this]() { read_worker_output(); });
-#else
-    throw std::runtime_error("Native Matter daemon is only implemented on Unix-like hosts in this revision.");
-#endif
-  }
-
-  MatterStatus send_status_request(const JsonValue &payload) {
-    const JsonValue result = send_command(payload);
-    status_ = status_from_json(result);
-    return status_;
-  }
-
-  JsonValue send_command(JsonValue payload) {
-    const int requestId = nextRequestId_.fetch_add(1);
-    payload.as_object()["requestId"] = requestId;
-
-    auto pending = std::make_shared<PendingResponse>();
-    {
-      std::lock_guard<std::mutex> lock(pendingMutex_);
-      pendingRequests_.emplace(requestId, pending);
-    }
-
-#if defined(__APPLE__) || defined(__linux__)
-    write_all(child_.stdinFd, mkjson::stringify(payload) + "\n");
-#endif
-
-    std::unique_lock<std::mutex> lock(pending->mutex);
-    if (!pending->cv.wait_for(lock, std::chrono::seconds(10), [&pending] { return pending->ready; })) {
-      throw std::runtime_error("Timed out waiting for Matter worker response");
-    }
-
-    if (!pending->ok) {
-      throw std::runtime_error(pending->error.empty() ? "Matter worker request failed" : pending->error);
-    }
-
-    return pending->result;
-  }
-
-  void read_worker_output() {
-#if defined(__APPLE__) || defined(__linux__)
-    std::string line;
-    while (read_line(child_.stdoutFd, line)) {
-      if (!line.empty()) {
-        try {
-          handle_worker_message(line);
-        } catch (const std::exception &error) {
-          std::cerr << "[matterkiosk-daemon] Ignoring malformed worker stdout line: " << error.what() << '\n';
-        }
-      }
-    }
-#endif
-
-    fail_pending_requests("Matter worker exited");
-  }
-
-  void handle_worker_message(const std::string &line) {
-    const auto payload = extract_protocol_json(line);
-    if (!payload.has_value()) {
-      return;
-    }
-
-    const JsonValue message = mkjson::parse(*payload);
-    const std::string type = require_string(message, "type");
-
-    if (type == "response") {
-      const int requestId = int_or(message, "requestId", -1);
-      std::shared_ptr<PendingResponse> pending;
-      {
-        std::lock_guard<std::mutex> lock(pendingMutex_);
-        const auto it = pendingRequests_.find(requestId);
-        if (it == pendingRequests_.end()) {
-          return;
-        }
-        pending = it->second;
-        pendingRequests_.erase(it);
-      }
-
-      {
-        std::lock_guard<std::mutex> lock(pending->mutex);
-        pending->ready = true;
-        pending->ok = bool_or(message, "ok", false);
-        if (const JsonValue *result = message.find("result"); result != nullptr) {
-          pending->result = *result;
-        }
-        if (const JsonValue *error = message.find("error"); error != nullptr && error->is_string()) {
-          pending->error = error->as_string();
-        }
-      }
-      pending->cv.notify_all();
-      return;
-    }
-
-    if (type == "target-triggered" && onTargetTriggered_) {
-      onTargetTriggered_(require_string(message, "targetId"));
-      return;
-    }
-
-    if (type == "target-turned-off" && onTargetTurnedOff_) {
-      onTargetTurnedOff_(require_string(message, "targetId"));
-    }
-  }
-
-  void fail_pending_requests(const std::string &message) {
-    std::unordered_map<int, std::shared_ptr<PendingResponse>> pending;
-    {
-      std::lock_guard<std::mutex> lock(pendingMutex_);
-      pending.swap(pendingRequests_);
-    }
-
-    for (const auto &[requestId, entry] : pending) {
-      (void)requestId;
-      std::lock_guard<std::mutex> lock(entry->mutex);
-      entry->ready = true;
-      entry->ok = false;
-      entry->error = message;
-      entry->cv.notify_all();
-    }
-  }
-
-  void shutdown() {
-#if defined(__APPLE__) || defined(__linux__)
-    if (child_.running()) {
-      terminate_process(child_);
-      close_fd(child_.stdinFd);
-      close_fd(child_.stdoutFd);
-      ::waitpid(child_.pid, nullptr, 0);
-      child_.pid = -1;
-    }
-#endif
-
-    if (readerThread_.joinable()) {
-      readerThread_.join();
-    }
-    fail_pending_requests("Matter worker stopped");
-  }
-
-  [[nodiscard]] fs::path resource_root_path() const {
-    const std::string envRoot = getenv_or_empty("MATTERKIOSK_RESOURCE_ROOT");
-    if (!envRoot.empty()) {
-      return envRoot;
-    }
-
-    const fs::path executable = current_executable_path();
-    const fs::path maybeResources = executable.parent_path().parent_path().parent_path();
-    if (fs::exists(maybeResources / "app.asar")) {
-      return maybeResources;
-    }
-    return {};
-  }
-
-  [[nodiscard]] fs::path worker_script_path() const {
-    const std::string explicitPath = getenv_or_empty("MATTERKIOSK_WORKER_SCRIPT");
-    if (!explicitPath.empty()) {
-      return explicitPath;
-    }
-    return resource_root_path() / "app.asar" / "dist" / "main" / "matter-worker.js";
-  }
-
-  [[nodiscard]] fs::path worker_executable_path() const {
-    const std::string explicitPath = getenv_or_empty("MATTERKIOSK_WORKER_EXECUTABLE");
-    if (!explicitPath.empty()) {
-      return explicitPath;
-    }
-    return electron_executable_path();
-  }
-
-  [[nodiscard]] fs::path electron_executable_path() const {
-    const std::string explicitPath = getenv_or_empty("MATTERKIOSK_ELECTRON_EXECUTABLE");
-    if (!explicitPath.empty()) {
-      return explicitPath;
-    }
-
-    const fs::path resourceRoot = resource_root_path();
-    if (resourceRoot.empty()) {
-      return current_executable_path();
-    }
-
-#ifdef __APPLE__
-    return resourceRoot.parent_path() / "MacOS" / "MatterKiosk";
-#else
-    return resourceRoot.parent_path() / "MatterKiosk";
-#endif
-  }
-
-  [[nodiscard]] std::map<std::string, std::string> worker_environment() const {
-    std::map<std::string, std::string> env;
-    env["ELECTRON_RUN_AS_NODE"] = "1";
-
-    const std::string cryptoFallback = getenv_or_empty("MATTER_NODEJS_CRYPTO");
-    if (!cryptoFallback.empty()) {
-      env["MATTER_NODEJS_CRYPTO"] = cryptoFallback;
-    }
-
-    return env;
-  }
-
-  ChildProcess child_;
-  std::thread readerThread_;
-  MatterStatus status_;
-  std::atomic<int> nextRequestId_{1};
-  std::mutex pendingMutex_;
-  std::unordered_map<int, std::shared_ptr<PendingResponse>> pendingRequests_;
-  EventHandler onTargetTriggered_;
-  EventHandler onTargetTurnedOff_;
-};
-
 class NativeDaemon {
  public:
-  NativeDaemon() {
-    worker_.set_target_triggered_handler([this](const std::string &targetId) { handle_target_triggered(targetId); });
-    worker_.set_target_turned_off_handler([this](const std::string &targetId) { handle_target_turned_off(targetId); });
+  NativeDaemon()
+      : runtime_(create_matter_runtime(matter_storage_path().string())) {
+    runtime_->setTargetTriggeredHandler([this](const std::string &targetId) { handle_target_triggered(targetId); });
+    runtime_->setTargetTurnedOffHandler([this](const std::string &targetId) { handle_target_turned_off(targetId); });
   }
 
   int run() {
@@ -843,7 +544,7 @@ class NativeDaemon {
     write_pid_file();
     config_ = load_config_from_disk();
     if (config_.backgroundDaemonEnabled) {
-      status_ = worker_.start(config_.targets);
+      status_ = runtime_->start(config_.targets);
     }
 
     try {
@@ -930,7 +631,7 @@ class NativeDaemon {
       }
 
       if (type == "get-status") {
-        status_ = config_.backgroundDaemonEnabled ? worker_.get_status() : MatterStatus{};
+        status_ = config_.backgroundDaemonEnabled ? runtime_->getStatus() : MatterStatus{};
         return JsonValue::Object{{"ok", true}, {"result", status_to_json(status_)}};
       }
 
@@ -941,16 +642,16 @@ class NativeDaemon {
         }
         config_ = parse_config(*config);
         if (config_.backgroundDaemonEnabled) {
-          status_ = worker_.sync_targets(config_.targets);
+          status_ = runtime_->syncTargets(config_.targets);
         } else {
-          worker_.stop();
+          runtime_->stop();
           status_ = {};
         }
         return JsonValue::Object{{"ok", true}};
       }
 
       if (type == "reset") {
-        status_ = worker_.reset();
+        status_ = runtime_->reset();
         return JsonValue::Object{{"ok", true}, {"result", status_to_json(status_)}};
       }
 
@@ -1001,7 +702,7 @@ class NativeDaemon {
       }
       if (!shuttingDown_.load()) {
         try {
-          worker_.set_target_off(targetId);
+          runtime_->setTargetOff(targetId);
         } catch (const std::exception &error) {
           std::cerr << "Failed to clear target " << targetId << ": " << error.what() << "\n";
         }
@@ -1077,7 +778,7 @@ class NativeDaemon {
 
   void cleanup() {
     shuttingDown_.store(true);
-    worker_.stop();
+    runtime_->stop();
 
     {
       std::lock_guard<std::mutex> lock(dashboardMutex_);
@@ -1105,7 +806,7 @@ class NativeDaemon {
 
   AppConfig config_;
   MatterStatus status_;
-  MatterWorkerClient worker_;
+  std::unique_ptr<MatterRuntime> runtime_;
   std::atomic<bool> shuttingDown_{false};
   std::mutex dashboardMutex_;
   std::map<std::string, ChildProcess> activeDashboards_;
