@@ -1,5 +1,7 @@
 node_modules/
 dist/
 release/
+assets/native/
+native/daemon/build/
 *.log
 .DS_Store

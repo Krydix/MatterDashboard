@@ -1,19 +1,7 @@
 import net from "node:net";
 import { AppConfig, MatterStatus } from "../shared/types";
+import { DaemonRequest, DaemonResponse } from "../shared/daemon-contract";
 import { getDaemonSocketPath } from "./app-paths";
-
-type DaemonRequest =
-  | { type: "ping" }
-  | { type: "get-status" }
-  | { type: "sync-config"; config: AppConfig }
-  | { type: "reset" }
-  | { type: "shutdown" };
-
-type DaemonResponse<T = unknown> = {
-  ok: boolean;
-  result?: T;
-  error?: string;
-};
 
 export async function pingDaemon(): Promise<boolean> {
   try {

@@ -7,7 +7,8 @@
     "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
     "dev:vite": "vite build --watch --mode development",
     "dev:electron": "wait-on dist/renderer/index.html && tsc -p tsconfig.main.json --watch & wait-on dist/main/index.js && electron .",
-    "build": "npm run build:renderer && npm run build:main",
+    "build": "npm run build:native && npm run build:renderer && npm run build:main",
+    "build:native": "node ./scripts/build-native.mjs",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
     "dist": "npm run build && electron-builder",
@@ -53,7 +54,14 @@
     },
     "files": [
       "dist/**/*",
-      "assets/**/*"
+      "assets/**/*",
+      "!assets/native/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/native",
+        "to": "native"
+      }
     ],
     "asarUnpack": [
       "node_modules/@matter/**",

@@ -41,6 +41,18 @@ export function getDaemonPidPath(): string {
   return path.join(getRuntimeDir(), "daemon.pid");
 }
 
+export function getNativeDaemonBinaryName(platform = process.platform): string {
+  return platform === "win32" ? "matterkiosk-daemon.exe" : "matterkiosk-daemon";
+}
+
+export function getNativeDaemonBundleDir(platform = process.platform, arch = process.arch): string {
+  return path.join("native", `${platform}-${arch}`);
+}
+
+export function getNativeDaemonBundlePath(platform = process.platform, arch = process.arch): string {
+  return path.join(getNativeDaemonBundleDir(platform, arch), getNativeDaemonBinaryName(platform));
+}
+
 export function getLaunchAgentPath(): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${DAEMON_LAUNCH_AGENT_LABEL}.plist`);
 }

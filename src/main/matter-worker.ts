@@ -1,5 +1,6 @@
 import "./electron-crypto-compat";
 import "@matter/main/platform";
+import readline from "node:readline";
 import { Endpoint, Environment, ServerNode, VendorId, CommissioningServer } from "@matter/main";
 import { BridgedDeviceBasicInformationServer } from "@matter/main/behaviors/bridged-device-basic-information";
 import { OnOffServer } from "@matter/main/behaviors/on-off";
@@ -33,6 +34,8 @@ type WorkerEvent = {
   type: "target-triggered" | "target-turned-off";
   targetId: string;
 };
+
+const STDIO_PROTOCOL_PREFIX = "MKP:";
 
 class MatterBridgeWorker {
   private server: ServerNode | null = null;
@@ -282,13 +285,19 @@ function getTargetUniqueId(targetId: string): string {
 function sendWorkerEvent(event: WorkerEvent): void {
   if (typeof process.send === "function") {
     process.send(event);
+    return;
   }
+
+  stdoutWrite(`${STDIO_PROTOCOL_PREFIX}${JSON.stringify(event)}\n`);
 }
 
 function sendWorkerResponse(response: WorkerResponse): void {
   if (typeof process.send === "function") {
     process.send(response);
+    return;
   }
+
+  stdoutWrite(`${STDIO_PROTOCOL_PREFIX}${JSON.stringify(response)}\n`);
 }
 
 function asErrorMessage(error: unknown): string {
@@ -300,7 +309,28 @@ function asErrorMessage(error: unknown): string {
 
 const bridge = new MatterBridgeWorker();
 
-process.on("message", async (message: WorkerCommand | undefined) => {
+const useStdioProtocol = typeof process.send !== "function";
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+
+if (useStdioProtocol) {
+  console.log = (...args: unknown[]) => {
+    console.error(...args);
+  };
+
+  process.stdout.write = ((chunk: string | Uint8Array, encoding?: BufferEncoding, callback?: (error?: Error | null) => void) => {
+    if (typeof encoding === "function") {
+      return process.stderr.write(chunk, encoding);
+    }
+
+    if (typeof callback === "function") {
+      return process.stderr.write(chunk, encoding, callback);
+    }
+
+    return process.stderr.write(chunk, encoding);
+  }) as typeof process.stdout.write;
+}
+
+async function handleCommand(message: WorkerCommand | undefined): Promise<void> {
   if (!message || typeof message !== "object" || !("type" in message)) {
     return;
   }
@@ -350,7 +380,35 @@ process.on("message", async (message: WorkerCommand | undefined) => {
       error: asErrorMessage(error),
     });
   }
+}
+
+process.on("message", (message: WorkerCommand | undefined) => {
+  void handleCommand(message);
 });
+
+if (useStdioProtocol) {
+  const lineReader = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  });
+
+  lineReader.on("line", (line) => {
+    try {
+      void handleCommand(JSON.parse(line) as WorkerCommand);
+    } catch (error) {
+      sendWorkerResponse({
+        type: "response",
+        requestId: -1,
+        ok: false,
+        error: asErrorMessage(error),
+      });
+    }
+  });
+
+  lineReader.on("close", () => {
+    bridge.stop().finally(() => process.exit(0));
+  });
+}
 
 process.on("disconnect", () => {
   bridge.stop().finally(() => process.exit(0));

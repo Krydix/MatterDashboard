@@ -11,6 +11,8 @@ import {
   DAEMON_LAUNCH_AGENT_LABEL,
   getDaemonPidPath,
   getDaemonSocketPath,
+  getNativeDaemonBinaryName,
+  getNativeDaemonBundlePath,
   getLaunchAgentPath,
   getRuntimeDir,
 } from "./app-paths";
@@ -166,7 +168,9 @@ function cleanupDaemonArtifacts(): void {
 function getDaemonLaunchConfig(): { executable: string; args: string[]; env: NodeJS.ProcessEnv } {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    ELECTRON_RUN_AS_NODE: "1",
+    MATTERKIOSK_ELECTRON_EXECUTABLE: process.execPath,
+    MATTERKIOSK_WORKER_EXECUTABLE: process.execPath,
+    MATTERKIOSK_WORKER_SCRIPT: getMatterWorkerScriptPath(),
   };
 
   if (!supportsMatterNativeCrypto()) {
@@ -178,8 +182,8 @@ function getDaemonLaunchConfig(): { executable: string; args: string[]; env: Nod
   }
 
   return {
-    executable: process.execPath,
-    args: [path.join(__dirname, "daemon.js")],
+    executable: getNativeDaemonBinaryPath(),
+    args: [],
     env,
   };
 }
@@ -268,9 +272,11 @@ function createLaunchAgentPlist(launch: {
   const stdoutPath = path.join(getRuntimeDir(), "daemon.stdout.log");
   const stderrPath = path.join(getRuntimeDir(), "daemon.stderr.log");
   const envEntries = Object.entries({
-    ELECTRON_RUN_AS_NODE: launch.env["ELECTRON_RUN_AS_NODE"] ?? "1",
     MATTER_NODEJS_CRYPTO: launch.env["MATTER_NODEJS_CRYPTO"],
+    MATTERKIOSK_ELECTRON_EXECUTABLE: launch.env["MATTERKIOSK_ELECTRON_EXECUTABLE"],
     MATTERKIOSK_UI_APP_PATH: launch.env["MATTERKIOSK_UI_APP_PATH"],
+    MATTERKIOSK_WORKER_EXECUTABLE: launch.env["MATTERKIOSK_WORKER_EXECUTABLE"],
+    MATTERKIOSK_WORKER_SCRIPT: launch.env["MATTERKIOSK_WORKER_SCRIPT"],
   }).filter(([, value]) => value !== undefined);
 
   return [
@@ -308,4 +314,41 @@ function escapeXml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
+}
+
+function getMatterWorkerScriptPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "app.asar", "dist", "main", "matter-worker.js");
+  }
+
+  return path.join(__dirname, "matter-worker.js");
+}
+
+function getNativeDaemonBinaryPath(): string {
+  const packagedBinary = path.join(process.resourcesPath, getNativeDaemonBundlePath());
+  if (app.isPackaged) {
+    return packagedBinary;
+  }
+
+  const assetBinary = path.resolve(process.cwd(), "assets", getNativeDaemonBundlePath());
+  if (existsSync(assetBinary)) {
+    return assetBinary;
+  }
+
+  const buildBinary = path.resolve(
+    process.cwd(),
+    "native",
+    "daemon",
+    "build",
+    `${process.platform}-${process.arch}`,
+    getNativeDaemonBinaryName(),
+  );
+
+  if (existsSync(buildBinary)) {
+    return buildBinary;
+  }
+
+  throw new Error(
+    `Native Matter daemon binary not found. Expected one of: ${assetBinary}, ${buildBinary}`,
+  );
 }
