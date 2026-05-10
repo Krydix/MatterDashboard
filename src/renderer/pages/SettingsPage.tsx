@@ -22,10 +22,15 @@ export default function SettingsPage(): React.ReactElement {
 
   async function save(updated: AppConfig) {
     setSaving(true);
+    const previousConfig = config;
+    setConfig(updated);
     try {
       await window.matterkiosk.saveConfig(updated);
-      setConfig(updated);
       setDaemonState(await window.matterkiosk.getDaemonState());
+    } catch (error) {
+      setConfig(previousConfig);
+      setDaemonState(await window.matterkiosk.getDaemonState());
+      throw error;
     } finally {
       setSaving(false);
     }
