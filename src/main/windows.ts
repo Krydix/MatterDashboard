@@ -1,4 +1,4 @@
-import { BrowserWindow, app, screen } from "electron";
+import { BrowserWindow, screen } from "electron";
 import path from "path";
 
 let settingsWindow: BrowserWindow | null = null;
@@ -38,12 +38,6 @@ export function createSettingsWindow(): BrowserWindow {
 
   settingsWindow.once("ready-to-show", () => {
     settingsWindow!.show();
-  });
-
-  // Hide instead of close — keep running in tray
-  settingsWindow.on("close", (event) => {
-    event.preventDefault();
-    settingsWindow!.hide();
   });
 
   return settingsWindow;

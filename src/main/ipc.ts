@@ -1,8 +1,15 @@
-import { app, ipcMain } from "electron";
+import { ipcMain } from "electron";
+import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
 import { getConfig, saveConfig } from "./store";
-import { getMatterBridge } from "./matter";
 import { openKioskWindow, showSettingsWindow } from "./windows";
-import { AppConfig } from "../shared/types";
+import { AppConfig, MatterStatus } from "../shared/types";
+
+const STOPPED_STATUS: MatterStatus = {
+  started: false,
+  paired: false,
+  qrCode: "",
+  manualPairingCode: "",
+};
 
 export function registerIpcHandlers(): void {
   ipcMain.handle("get-config", () => {
@@ -11,32 +18,32 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle("save-config", async (_event, config: AppConfig) => {
     saveConfig(config);
-    // Sync Matter bridge to the new config
-    const bridge = getMatterBridge();
-    if (bridge) {
-      await bridge.syncTargets(config.targets);
-    }
-    // Sync launch-at-login
-    app.setLoginItemSettings({ openAtLogin: config.launchAtLogin });
+    await reconcileDaemon(config);
   });
 
   ipcMain.handle("get-matter-status", async () => {
-    const bridge = getMatterBridge();
-    if (!bridge) {
-      return { started: false, paired: false, qrCode: "", manualPairingCode: "" };
-    }
-    return await bridge.getStatus();
+    const config = getConfig();
+    return await getMatterStatus(config);
+  });
+
+  ipcMain.handle("get-daemon-state", async () => {
+    const config = getConfig();
+    return await getDaemonState(config);
   });
 
   ipcMain.handle("reset-matter", async () => {
-    const bridge = getMatterBridge();
-    if (bridge) {
-      await bridge.reset();
+    const config = getConfig();
+    if (!config.backgroundDaemonEnabled) {
+      return;
     }
+    await resetMatter(config);
   });
 
   ipcMain.handle("set-launch-at-login", (_event, enabled: boolean) => {
-    app.setLoginItemSettings({ openAtLogin: enabled });
+    const config = getConfig();
+    const updated = { ...config, launchAtLogin: enabled };
+    saveConfig(updated);
+    return reconcileDaemon(updated);
   });
 
   // Renderer can trigger a kiosk window manually (for testing)

@@ -9,6 +9,7 @@ export interface KioskTarget {
 export interface AppConfig {
   targets: KioskTarget[];
   launchAtLogin: boolean;
+  backgroundDaemonEnabled: boolean;
 }
 
 export interface MatterStatus {
@@ -16,6 +17,12 @@ export interface MatterStatus {
   paired: boolean;
   qrCode: string;
   manualPairingCode: string;
+}
+
+export interface DaemonState {
+  enabled: boolean;
+  running: boolean;
+  launchAtLogin: boolean;
 }
 
 export type IpcChannels = {

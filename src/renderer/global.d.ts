@@ -1,9 +1,10 @@
-import { AppConfig, MatterStatus } from "../shared/types";
+import { AppConfig, DaemonState, MatterStatus } from "../shared/types";
 
 interface MatterKioskAPI {
   getConfig(): Promise<AppConfig>;
   saveConfig(config: AppConfig): Promise<void>;
   getMatterStatus(): Promise<MatterStatus>;
+  getDaemonState(): Promise<DaemonState>;
   resetMatter(): Promise<void>;
   setLaunchAtLogin(enabled: boolean): Promise<void>;
   openKiosk(targetId: string): Promise<void>;

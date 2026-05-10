@@ -1,18 +1,23 @@
 import React, { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { MatterStatus } from "../../shared/types";
+import { DaemonState, MatterStatus } from "../../shared/types";
 import "./PairingPage.css";
 
 export default function PairingPage(): React.ReactElement {
   const [status, setStatus] = useState<MatterStatus | null>(null);
+  const [daemonState, setDaemonState] = useState<DaemonState | null>(null);
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
 
   async function load() {
     setLoading(true);
     try {
-      const s = await window.matterkiosk.getMatterStatus();
+      const [s, daemon] = await Promise.all([
+        window.matterkiosk.getMatterStatus(),
+        window.matterkiosk.getDaemonState(),
+      ]);
       setStatus(s);
+      setDaemonState(daemon);
     } finally {
       setLoading(false);
     }
@@ -54,6 +59,12 @@ export default function PairingPage(): React.ReactElement {
               </span>
             </div>
             <div className="status-row">
+              <span className="status-label">Background Process</span>
+              <span className={`status-badge ${daemonState?.enabled ? "ok" : "idle"}`}>
+                {daemonState?.enabled ? "Enabled" : "Disabled"}
+              </span>
+            </div>
+            <div className="status-row">
               <span className="status-label">Paired</span>
               <span className={`status-badge ${status.paired ? "ok" : "idle"}`}>
                 {status.paired ? "Yes — commissioned to a fabric" : "Not yet paired"}
@@ -61,7 +72,16 @@ export default function PairingPage(): React.ReactElement {
             </div>
           </div>
 
-          {!status.paired && status.qrCode && (
+          {!daemonState?.enabled && (
+            <div className="card">
+              <h2 className="section-title">Background process is disabled</h2>
+              <p className="text-muted">
+                Enable the background Matter process on the Settings page to start pairing and to keep dashboards available after this app closes.
+              </p>
+            </div>
+          )}
+
+          {daemonState?.enabled && !status.paired && status.qrCode && (
             <div className="card qr-card">
               <h2 className="section-title">Scan QR Code</h2>
               <p className="text-muted qr-hint">
@@ -81,7 +101,7 @@ export default function PairingPage(): React.ReactElement {
             </div>
           )}
 
-          {!status.paired && status.manualPairingCode && (
+          {daemonState?.enabled && !status.paired && status.manualPairingCode && (
             <div className="card">
               <h2 className="section-title">Manual Pairing Code</h2>
               <p className="text-muted" style={{ marginBottom: 12 }}>
