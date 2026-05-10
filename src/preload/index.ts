@@ -1,0 +1,26 @@
+import { contextBridge, ipcRenderer } from "electron";
+import { AppConfig, MatterStatus } from "../shared/types";
+
+// Expose a typed API to the renderer through contextBridge.
+// The renderer has NO access to Node.js — only the methods defined here.
+contextBridge.exposeInMainWorld("matterkiosk", {
+  getConfig: (): Promise<AppConfig> => ipcRenderer.invoke("get-config"),
+
+  saveConfig: (config: AppConfig): Promise<void> => ipcRenderer.invoke("save-config", config),
+
+  getMatterStatus: (): Promise<MatterStatus> => ipcRenderer.invoke("get-matter-status"),
+
+  resetMatter: (): Promise<void> => ipcRenderer.invoke("reset-matter"),
+
+  setLaunchAtLogin: (enabled: boolean): Promise<void> =>
+    ipcRenderer.invoke("set-launch-at-login", enabled),
+
+  openKiosk: (targetId: string): Promise<void> => ipcRenderer.invoke("open-kiosk", targetId),
+
+  onTargetTriggered: (callback: (targetId: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, targetId: string) => callback(targetId);
+    ipcRenderer.on("target-triggered", handler);
+    // Return an unsubscribe function
+    return () => ipcRenderer.removeListener("target-triggered", handler);
+  },
+});

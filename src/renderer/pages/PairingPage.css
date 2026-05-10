@@ -1,0 +1,88 @@
+.status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.status-label {
+  font-weight: 500;
+}
+
+.status-badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-badge.ok {
+  background: rgba(78, 204, 163, 0.15);
+  color: var(--success);
+}
+
+.status-badge.error {
+  background: rgba(233, 69, 96, 0.15);
+  color: var(--accent);
+}
+
+.status-badge.idle {
+  background: rgba(154, 154, 176, 0.15);
+  color: var(--text-muted);
+}
+
+.qr-card {
+  text-align: center;
+}
+
+.qr-image-wrapper {
+  background: #fff;
+  padding: 16px;
+  border-radius: var(--radius);
+  display: inline-block;
+  margin: 16px auto;
+  display: flex;
+  justify-content: center;
+}
+
+.qr-code-text {
+  font-family: monospace;
+  font-size: 11px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  word-break: break-all;
+  color: var(--success);
+}
+
+.qr-hint {
+  font-size: 13px;
+}
+
+.manual-code {
+  font-family: monospace;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--success);
+  background: var(--surface2);
+  border-radius: var(--radius);
+  padding: 16px 24px;
+  text-align: center;
+}
+
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
