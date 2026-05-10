@@ -3,6 +3,21 @@ import path from "path";
 
 let settingsWindow: BrowserWindow | null = null;
 
+async function applyLiquidGlass(win: BrowserWindow): Promise<void> {
+  if (process.platform !== "darwin") return;
+  try {
+    // Dynamic import so non-macOS builds don't fail at load time.
+    // addView() handles its own fallback: native NSGlassEffectView on macOS 26+,
+    // NSVisualEffectView blur on older macOS — no guard needed here.
+    const { default: liquidGlass } = await import("electron-liquid-glass");
+    liquidGlass.addView(win.getNativeWindowHandle(), {
+      cornerRadius: 12,
+    });
+  } catch {
+    // Not on macOS or native module unavailable — degrade gracefully
+  }
+}
+
 export interface KioskWindowHandle {
   close: () => void;
   closed: Promise<void>;
@@ -32,12 +47,22 @@ export function createSettingsWindow(): BrowserWindow {
     },
     show: false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    // Transparent so liquid glass (macOS) or CSS glassmorphism shows through the sidebar
+    transparent: process.platform === "darwin",
+    backgroundColor: process.platform === "darwin" ? "#00000000" : "#1a1a2e",
   });
 
   settingsWindow.loadURL(RENDERER_URL);
 
   settingsWindow.once("ready-to-show", () => {
     settingsWindow!.show();
+  });
+
+  // Apply native liquid glass after content is ready (macOS only, graceful fallback)
+  settingsWindow.webContents.once("did-finish-load", () => {
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      void applyLiquidGlass(settingsWindow);
+    }
   });
 
   return settingsWindow;

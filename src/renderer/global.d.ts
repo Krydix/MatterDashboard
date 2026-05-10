@@ -1,6 +1,7 @@
 import { AppConfig, DaemonState, MatterStatus } from "../shared/types";
 
 interface MatterKioskAPI {
+  platform: string;
   getConfig(): Promise<AppConfig>;
   saveConfig(config: AppConfig): Promise<void>;
   getMatterStatus(): Promise<MatterStatus>;

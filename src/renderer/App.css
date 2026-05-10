@@ -7,20 +7,37 @@
 .sidebar {
   width: 200px;
   min-width: 200px;
-  background: var(--surface);
+  /* Default (non-macOS): subtle glassmorphism via CSS */
+  background: rgba(22, 33, 62, 0.88);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 20px 0;
-  -webkit-app-region: drag; /* allow dragging from sidebar on macOS */
+  /* Extra top clearance so content clears the macOS traffic lights */
+  padding: 38px 0 20px;
+  -webkit-app-region: drag; /* allow dragging from sidebar */
+}
+
+/* On macOS the native liquid glass is applied — keep sidebar nearly transparent so it shows through */
+body[data-platform="darwin"] .sidebar {
+  background: rgba(15, 52, 96, 0.12);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .sidebar-logo {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 20px 24px;
+  /* Left margin pushed right so the logo clears the macOS traffic-light buttons */
+  padding: 0 20px 24px 24px;
   border-bottom: 1px solid var(--border);
+}
+
+body[data-platform="darwin"] .sidebar-logo {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 .logo-icon {
@@ -68,6 +85,15 @@
   color: var(--accent);
 }
 
+/* On macOS glass sidebar: use translucent hover/active so the glass shows through */
+body[data-platform="darwin"] .nav-item:hover {
+  background: rgba(15, 52, 96, 0.5);
+}
+
+body[data-platform="darwin"] .nav-item.active {
+  background: rgba(15, 52, 96, 0.65);
+}
+
 .nav-icon {
   font-size: 16px;
   width: 20px;
@@ -78,6 +104,27 @@
   flex: 1;
   overflow-y: auto;
   padding: 32px;
+  /* Make empty / non-interactive areas of the main content draggable too */
+  -webkit-app-region: drag;
+}
+
+/* Restore pointer interaction for all interactive elements inside main content */
+.main-content button,
+.main-content input,
+.main-content select,
+.main-content textarea,
+.main-content a,
+.main-content label,
+.main-content .target-list,
+.main-content .target-card,
+.main-content .card,
+.main-content .empty-state {
+  -webkit-app-region: no-drag;
+}
+
+/* On macOS: keep main content fully opaque so glass only shows through sidebar */
+body[data-platform="darwin"] .main-content {
+  background: var(--bg);
 }
 
 .page-title {

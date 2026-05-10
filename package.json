@@ -27,6 +27,7 @@
   "dependencies": {
     "@matter/main": "^0.16.11",
     "@matter/nodejs": "^0.16.11",
+    "electron-liquid-glass": "^1.1.1",
     "electron-store": "^8.2.0",
     "qrcode.react": "^4.2.0",
     "uuid": "^11.0.3"
