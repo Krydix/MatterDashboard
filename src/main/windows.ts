@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { BrowserWindow, screen } from "electron";
 import path from "path";
+import { acquireKioskPowerAssertion } from "./power-management";
 
 let settingsWindow: BrowserWindow | null = null;
 const execFileAsync = promisify(execFile);
@@ -197,6 +198,7 @@ export function openKioskWindow(
   const restoreTargetPromise = options.restorePreviousApp
     ? getMacApplicationRestoreTarget(options.useStartupRestoreTargetFallback ?? false)
     : Promise.resolve(null);
+  const powerAssertion = acquireKioskPowerAssertion();
 
   const kiosk = new BrowserWindow({
     x: primaryDisplay.bounds.x,
@@ -236,6 +238,7 @@ export function openKioskWindow(
 
     kiosk.on("closed", () => {
       clearTimeout(timer);
+      powerAssertion.release();
       void restoreTargetPromise
         .then((target) => restoreMacApplication(target))
         .finally(() => {
