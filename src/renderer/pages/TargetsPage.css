@@ -6,6 +6,12 @@
   gap: 16px;
 }
 
+.targets-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .target-list {
   display: flex;
   flex-direction: column;
@@ -51,6 +57,23 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.target-provider {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.provider-trmnl {
+  border-color: var(--control);
+  color: var(--control);
 }
 
 .trigger-badge {
@@ -74,4 +97,10 @@
 .empty-state {
   text-align: center;
   padding: 40px;
+}
+
+@media (max-width: 640px) {
+  .targets-header {
+    flex-direction: column;
+  }
 }

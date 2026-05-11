@@ -29,10 +29,15 @@
     "@matter/nodejs": "^0.16.11",
     "electron-liquid-glass": "^1.1.1",
     "electron-store": "^8.2.0",
+    "fast-xml-parser": "^5.7.3",
+    "js-yaml": "^4.1.1",
+    "jszip": "^3.10.1",
+    "liquidjs": "^10.25.7",
     "qrcode.react": "^4.2.0",
     "uuid": "^11.0.3"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/uuid": "^10.0.0",

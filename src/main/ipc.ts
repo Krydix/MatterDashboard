@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ipcMain } from "electron";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
+import { resolveKioskTargetUrl } from "./dashboard-runtime";
+import { importTrmnlRecipe } from "./trmnl-import";
 import { getConfig, saveConfig } from "./store";
 import { openKioskWindow, showSettingsWindow } from "./windows";
 import { AppConfig, MatterStatus, VolumeControlAvailability } from "../shared/types";
@@ -67,6 +69,10 @@ export function registerIpcHandlers(): void {
     await reconcileDaemon(config);
   });
 
+  ipcMain.handle("import-trmnl-recipe", async (_event, source: string) => {
+    return await importTrmnlRecipe(source);
+  });
+
   ipcMain.handle("get-volume-control-availability", async () => {
     return await getVolumeControlAvailability();
   });
@@ -101,7 +107,7 @@ export function registerIpcHandlers(): void {
     const config = getConfig();
     const target = config.targets.find((t) => t.id === targetId);
     if (target) {
-      await openKioskWindow(target.url, target.durationSeconds * 1000, {
+      await openKioskWindow(await resolveKioskTargetUrl(target), target.durationSeconds * 1000, {
         restorePreviousApp: true,
       }).closed;
     }

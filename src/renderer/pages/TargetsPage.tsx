@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { AppConfig, KioskTarget } from "../../shared/types";
+import { AppConfig, DashboardProvider, KioskTarget } from "../../shared/types";
 import TargetModal from "../components/TargetModal";
 import "./TargetsPage.css";
 
@@ -9,6 +9,7 @@ export default function TargetsPage(): React.ReactElement {
   const [editingTarget, setEditingTarget] = useState<KioskTarget | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [lastTriggered, setLastTriggered] = useState<string | null>(null);
+  const [draftProvider, setDraftProvider] = useState<DashboardProvider>("url");
 
   useEffect(() => {
     window.matterkiosk.getConfig().then(setConfig);
@@ -25,12 +26,14 @@ export default function TargetsPage(): React.ReactElement {
     setConfig(updated);
   }
 
-  function openAdd() {
+  function openAdd(provider: DashboardProvider = "url") {
+    setDraftProvider(provider);
     setEditingTarget(null);
     setShowModal(true);
   }
 
   function openEdit(target: KioskTarget) {
+    setDraftProvider(target.provider);
     setEditingTarget(target);
     setShowModal(true);
   }
@@ -74,17 +77,22 @@ export default function TargetsPage(): React.ReactElement {
             Each enabled dashboard becomes a Matter outlet in your smart home app.
           </p>
         </div>
-        <button className="primary" onClick={openAdd}>
-          + Add Dashboard
-        </button>
+        <div className="targets-actions">
+          <button className="secondary" onClick={() => openAdd("trmnl")}>
+            Import TRMNL Recipe
+          </button>
+          <button className="primary" onClick={() => openAdd("url")}>
+            + Add Dashboard
+          </button>
+        </div>
       </div>
 
       {config.targets.length === 0 && (
         <div className="card empty-state">
           <p>No dashboards configured yet.</p>
           <p className="text-muted" style={{ marginTop: 8 }}>
-            Add a dashboard URL (e.g. a weather page, local Grafana, Home Assistant) and it will
-            appear as a Matter outlet in your controller.
+            Add a dashboard URL or build a native TRMNL-style template and it will appear as a
+            Matter outlet in your controller.
           </p>
         </div>
       )}
@@ -97,8 +105,9 @@ export default function TargetsPage(): React.ReactElement {
           >
             <div className="target-card-left">
               <div className="target-name">{target.name}</div>
-              <div className="target-url text-muted">{target.url}</div>
+              <div className="target-url text-muted">{describeTarget(target)}</div>
               <div className="target-meta text-muted">
+                <span className={`target-provider provider-${target.provider}`}>{providerLabel(target)}</span>
                 Display for {target.durationSeconds}s
                 {lastTriggered === target.id && (
                   <span className="trigger-badge">▶ Triggered!</span>
@@ -137,6 +146,7 @@ export default function TargetsPage(): React.ReactElement {
               url: "",
               durationSeconds: 30,
               enabled: true,
+              provider: draftProvider,
             }
           }
           onSave={handleSaveTarget}
@@ -145,4 +155,26 @@ export default function TargetsPage(): React.ReactElement {
       )}
     </div>
   );
+}
+
+function describeTarget(target: KioskTarget): string {
+  if (target.provider === "trmnl") {
+    const recipeId = target.trmnl?.importSource?.recipeId;
+    if (recipeId) {
+      return `TRMNL recipe #${recipeId}`;
+    }
+
+    const pollingCount = target.trmnl?.polling?.enabled ? target.trmnl.polling.exchanges.length : 0;
+    if (pollingCount > 0) {
+      return `Native TRMNL runtime (${pollingCount} exchange${pollingCount === 1 ? "" : "s"})`;
+    }
+
+    return "Native TRMNL runtime (Liquid template + JSON data)";
+  }
+
+  return target.url;
+}
+
+function providerLabel(target: KioskTarget): string {
+  return target.provider === "trmnl" ? "TRMNL" : "URL";
 }

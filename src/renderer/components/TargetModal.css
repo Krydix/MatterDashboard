@@ -35,14 +35,51 @@
   gap: 6px;
 }
 
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .field-row {
   flex-direction: row;
   align-items: center;
 }
 
+.field-help {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.code-area {
+  min-height: 160px;
+  resize: vertical;
+  font-family: "SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .field-error {
   color: var(--accent);
   font-size: 12px;
+}
+
+.import-block {
+  gap: 10px;
+}
+
+.import-row {
+  display: flex;
+  gap: 10px;
+}
+
+.import-row input {
+  flex: 1;
+}
+
+.import-button {
+  flex-shrink: 0;
 }
 
 .modal-actions {
@@ -51,4 +88,10 @@
   gap: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
+}
+
+@media (max-width: 640px) {
+  .import-row {
+    flex-direction: column;
+  }
 }

@@ -1,13 +1,25 @@
 # MatterDashboard
 
-MatterDashboard currently hosts the MatterKiosk app: a small Electron utility that exposes saved dashboard URLs as Matter on/off devices.
+MatterDashboard currently hosts the MatterKiosk app: a small Electron utility that exposes saved dashboards as Matter on/off devices.
 
 ## What It Does
 
 - Add one or more dashboard URLs.
+- Build native TRMNL-style dashboards from Liquid templates and JSON data.
+- Import TRMNL recipes by recipe URL, recipe ID, or archive URL.
+- Cache the TRMNL framework assets locally so imported dashboards can keep rendering without a permanent dependency on trmnl.com.
+- Poll TRMNL recipe exchanges locally and rewrite the dashboard runtime on the configured interval.
 - Expose each enabled dashboard as a Matter endpoint.
 - Pair the bridge with Apple Home, Google Home, Home Assistant, or another Matter controller.
 - Open a dashboard fullscreen when its Matter device is triggered.
+
+## Native TRMNL Dashboards
+
+TRMNL targets can now be authored manually or imported from the public TRMNL recipe ecosystem.
+
+- Use the Dashboards page to switch a target to Native TRMNL Runtime or click Import TRMNL Recipe.
+- Imported recipes pull the recipe archive, transform the Liquid template to MatterKiosk's local runtime, preserve field defaults, and configure any polling exchanges they declare.
+- The runtime caches framework CSS and JavaScript under MatterKiosk's application runtime directory and refreshes exchange-driven dashboards locally on the imported interval.
 
 ## Development
 

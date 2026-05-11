@@ -1,4 +1,5 @@
 import { app } from "electron";
+import { resolveKioskTargetUrl } from "./dashboard-runtime";
 import { reconcileDaemon } from "./daemon-manager";
 import { getDashboardTargetId } from "./execution-mode";
 import { getConfig } from "./store";
@@ -23,7 +24,7 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const kioskWindow = openKioskWindow(target.url, target.durationSeconds * 1000, {
+    const kioskWindow = openKioskWindow(await resolveKioskTargetUrl(target), target.durationSeconds * 1000, {
       restorePreviousApp: true,
       useStartupRestoreTargetFallback: true,
     });
