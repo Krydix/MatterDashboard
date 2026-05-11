@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { AppConfig, DaemonState } from "../../shared/types";
+import { AppConfig, DaemonState, VolumeControlAvailability } from "../../shared/types";
+
+const VOLUME_AVAILABILITY_REFRESH_MS = 3000;
 
 export default function SettingsPage(): React.ReactElement {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [daemonState, setDaemonState] = useState<DaemonState | null>(null);
+  const [volumeAvailability, setVolumeAvailability] = useState<VolumeControlAvailability | null>(null);
   const [saving, setSaving] = useState(false);
   const [volumeName, setVolumeName] = useState("");
 
@@ -12,17 +15,75 @@ export default function SettingsPage(): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    if (window.matterkiosk.platform !== "darwin") {
+      return;
+    }
+
+    let disposed = false;
+
+    const refresh = () => {
+      if (!disposed) {
+        void load();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+      }
+    };
+
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        refresh();
+      }
+    }, VOLUME_AVAILABILITY_REFRESH_MS);
+
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    const mediaDevices = navigator.mediaDevices;
+    if (typeof mediaDevices?.addEventListener === "function") {
+      mediaDevices.addEventListener("devicechange", refresh);
+    }
+
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (typeof mediaDevices?.removeEventListener === "function") {
+        mediaDevices.removeEventListener("devicechange", refresh);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     setVolumeName(config?.volumeControl.name ?? "");
   }, [config?.volumeControl.name]);
 
   async function load() {
-    const [nextConfig, nextDaemonState] = await Promise.all([
+    let [nextConfig, nextDaemonState, nextVolumeAvailability] = await Promise.all([
       window.matterkiosk.getConfig(),
       window.matterkiosk.getDaemonState(),
+      window.matterkiosk.getVolumeControlAvailability(),
     ]);
+
+    if (nextConfig.volumeControl.enabled && !nextVolumeAvailability.available) {
+      nextConfig = {
+        ...nextConfig,
+        volumeControl: {
+          ...nextConfig.volumeControl,
+          enabled: false,
+        },
+      };
+      await window.matterkiosk.saveConfig(nextConfig);
+      nextDaemonState = await window.matterkiosk.getDaemonState();
+    }
 
     setConfig(nextConfig);
     setDaemonState(nextDaemonState);
+    setVolumeAvailability(nextVolumeAvailability);
   }
 
   async function save(updated: AppConfig) {
@@ -52,7 +113,7 @@ export default function SettingsPage(): React.ReactElement {
   }
 
   async function handleVolumeControlChange(e: React.ChangeEvent<HTMLInputElement>) {
-    if (!config) return;
+    if (!config || !volumeAvailability?.available) return;
     await save({
       ...config,
       volumeControl: {
@@ -63,7 +124,7 @@ export default function SettingsPage(): React.ReactElement {
   }
 
   async function commitVolumeName() {
-    if (!config) return;
+    if (!config || !volumeAvailability?.available) return;
 
     const name = volumeName.trim() || "Volume";
     if (name !== volumeName) {
@@ -84,6 +145,11 @@ export default function SettingsPage(): React.ReactElement {
   }
 
   if (!config) return <p style={{ color: "var(--text-muted)" }}>Loading…</p>;
+
+  const volumeControlLocked = saving || !(volumeAvailability?.available ?? false);
+  const volumeControlHelperText = volumeAvailability?.available
+    ? "Available on macOS when the current output device exposes adjustable system volume."
+    : (volumeAvailability?.reason ?? "Checking current audio output support...");
 
   return (
     <div>
@@ -144,7 +210,7 @@ export default function SettingsPage(): React.ReactElement {
               type="checkbox"
               checked={config.volumeControl.enabled}
               onChange={handleVolumeControlChange}
-              disabled={saving || window.matterkiosk.platform !== "darwin"}
+              disabled={volumeControlLocked}
             />
             <span className="toggle-slider" />
           </label>
@@ -168,12 +234,10 @@ export default function SettingsPage(): React.ReactElement {
                 e.currentTarget.blur();
               }
             }}
-            disabled={saving || window.matterkiosk.platform !== "darwin"}
+            disabled={volumeControlLocked}
           />
           <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
-            {window.matterkiosk.platform === "darwin"
-              ? "Available on macOS in this build. Linux and Windows can plug into the same accessory abstraction later."
-              : "This build only enables the host volume backend on macOS for now."}
+            {volumeControlHelperText}
           </div>
         </div>
       </div>

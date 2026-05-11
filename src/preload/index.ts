@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AppConfig, DaemonState, MatterStatus } from "../shared/types";
+import { AppConfig, DaemonState, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 // Expose a typed API to the renderer through contextBridge.
 // The renderer has NO access to Node.js — only the methods defined here.
@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld("matterkiosk", {
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke("get-config"),
 
   saveConfig: (config: AppConfig): Promise<void> => ipcRenderer.invoke("save-config", config),
+
+  getVolumeControlAvailability: (): Promise<VolumeControlAvailability> =>
+    ipcRenderer.invoke("get-volume-control-availability"),
 
   getMatterStatus: (): Promise<MatterStatus> => ipcRenderer.invoke("get-matter-status"),
 

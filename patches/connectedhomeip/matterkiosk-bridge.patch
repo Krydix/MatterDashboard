@@ -29,9 +29,10 @@ index 6141f660..9a269d99 100644
  #include <setup_payload/QRCodeSetupPayloadGenerator.h>
  #include <setup_payload/SetupPayload.h>
  
-@@ -53,6 +59,8 @@
+@@ -53,6 +59,9 @@
  #include <cassert>
  #include <iostream>
++#include <limits>
  #include <string>
 +#include <unordered_map>
 +#include <unordered_set>
@@ -356,7 +357,7 @@ index 6141f660..9a269d99 100644
  const EmberAfDeviceType gBridgedComposedDeviceTypes[] = { { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT },
                                                            { DEVICE_TYPE_POWER_SOURCE, DEVICE_VERSION_DEFAULT } };
  
-@@ -675,6 +933,311 @@ const EmberAfDeviceType gComposedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_
+@@ -675,6 +933,331 @@ const EmberAfDeviceType gComposedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_
  const EmberAfDeviceType gBridgedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_SENSOR, DEVICE_VERSION_DEFAULT },
                                                              { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT } };
  
@@ -396,6 +397,14 @@ index 6141f660..9a269d99 100644
 +    char buffer[Device::kDeviceUniqueIdSize + 1] = { 0 };
 +    snprintf(buffer, sizeof(buffer), "MK-%016llx", static_cast<unsigned long long>(MatterKioskHashTargetId(targetId)));
 +    return std::string(buffer);
++}
++
++chip::EndpointId MatterKioskPreferredEndpointIdForTarget(const std::string & targetId)
++{
++    const uint64_t hash = MatterKioskHashTargetId(targetId);
++    const uint32_t span = static_cast<uint32_t>(std::numeric_limits<chip::EndpointId>::max()) -
++        static_cast<uint32_t>(gFirstDynamicEndpointId) + 1;
++    return static_cast<chip::EndpointId>(static_cast<uint32_t>(gFirstDynamicEndpointId) + (hash % span));
 +}
 +
 +MatterKioskBridgeDevice * FindMatterKioskDeviceByTargetId(const std::string & targetId)
@@ -459,6 +468,9 @@ index 6141f660..9a269d99 100644
 +    const std::string uniqueId = MatterKioskUniqueIdForTarget(targetId);
 +    entry->device->SetUniqueId(uniqueId.c_str());
 +
++    const chip::EndpointId previousEndpointId = gCurrentEndpointId;
++    gCurrentEndpointId = MatterKioskPreferredEndpointIdForTarget(targetId);
++
 +#if !CHIP_CONFIG_USE_ENDPOINT_UNIQUE_ID
 +    int index = dimmable
 +        ? AddDeviceEndpoint(entry->device.get(), &bridgedDimmableLightEndpoint,
@@ -476,6 +488,8 @@ index 6141f660..9a269d99 100644
 +                            Span<DataVersion>(entry->dataVersions.data(), MATTER_ARRAY_SIZE(bridgedLightClusters)),
 +                            chip::CharSpan::fromCharString(uniqueId.c_str()), 1);
 +#endif
++
++    gCurrentEndpointId = previousEndpointId;
 +
 +    VerifyOrReturnValue(index >= 0, nullptr);
 +
@@ -513,6 +527,7 @@ index 6141f660..9a269d99 100644
 +    };
 +
 +    std::unordered_map<std::string, DesiredTarget> desiredTargets;
++    std::vector<std::string> desiredTargetIds;
 +    gMatterKioskSuppressEvents = true;
 +
 +    if (targets.isArray())
@@ -544,6 +559,11 @@ index 6141f660..9a269d99 100644
 +            const bool on = entry.isMember("on") && entry["on"].isBool() ? entry["on"].asBool() : false;
 +            const uint8_t level = entry.isMember("level") && entry["level"].isInt() ? ClampMatterKioskLevel(entry["level"].asInt()) : 254;
 +
++            if (desiredTargets.find(targetId) == desiredTargets.end())
++            {
++                desiredTargetIds.push_back(targetId);
++            }
++
 +            desiredTargets[targetId] = DesiredTarget{
 +                .name = targetName,
 +                .dimmable = dimmable,
@@ -568,8 +588,9 @@ index 6141f660..9a269d99 100644
 +        RemoveMatterKioskDevice(targetId);
 +    }
 +
-+    for (const auto & [targetId, target] : desiredTargets)
++    for (const auto & targetId : desiredTargetIds)
 +    {
++        const DesiredTarget & target = desiredTargets.at(targetId);
 +        MatterKioskBridgeDevice * device = EnsureMatterKioskDevice(targetId, target.name, target.dimmable);
 +        VerifyOrDie(device != nullptr);
 +

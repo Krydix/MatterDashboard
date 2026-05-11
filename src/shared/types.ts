@@ -11,6 +11,11 @@ export interface VolumeControlConfig {
   name: string;
 }
 
+export interface VolumeControlAvailability {
+  available: boolean;
+  reason: string;
+}
+
 export type MatterAccessoryKind = "dashboard" | "volume";
 
 export type MatterAccessoryDeviceType = "on-off-plug-in-unit" | "dimmable-light";
@@ -62,6 +67,7 @@ export interface DaemonState {
 export type IpcChannels = {
   "get-config": () => AppConfig;
   "save-config": (config: AppConfig) => void;
+  "get-volume-control-availability": () => VolumeControlAvailability;
   "get-matter-status": () => MatterStatus;
   "reset-matter": () => void;
   "set-launch-at-login": (enabled: boolean) => void;

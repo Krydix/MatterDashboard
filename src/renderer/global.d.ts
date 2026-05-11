@@ -1,9 +1,10 @@
-import { AppConfig, DaemonState, MatterStatus } from "../shared/types";
+import { AppConfig, DaemonState, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 interface MatterKioskAPI {
   platform: string;
   getConfig(): Promise<AppConfig>;
   saveConfig(config: AppConfig): Promise<void>;
+  getVolumeControlAvailability(): Promise<VolumeControlAvailability>;
   getMatterStatus(): Promise<MatterStatus>;
   getDaemonState(): Promise<DaemonState>;
   resetMatter(): Promise<void>;
