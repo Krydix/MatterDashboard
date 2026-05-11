@@ -1,8 +1,11 @@
 #include "matter_runtime.hpp"
 #include "mini_json.hpp"
+#include "volume_controller.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <condition_variable>
 #include <cstdio>
@@ -47,6 +50,7 @@ namespace {
 
 struct AppConfig {
   std::vector<KioskTarget> targets;
+  VolumeControlConfig volumeControl;
   bool launchAtLogin = false;
   bool backgroundDaemonEnabled = false;
 };
@@ -69,6 +73,10 @@ struct ChildProcess {
 
 std::atomic<bool> g_interrupted = false;
 int g_server_fd = -1;
+
+constexpr const char *kVolumeAccessoryId = "system-volume";
+constexpr auto kVolumeStatePollInterval = std::chrono::seconds(2);
+constexpr auto kVolumeOffDebounceWindow = std::chrono::milliseconds(750);
 
 [[nodiscard]] std::string getenv_or_empty(const char *name) {
   const char *value = std::getenv(name);
@@ -97,6 +105,40 @@ int g_server_fd = -1;
     return fallback;
   }
   return static_cast<int>(field->as_number());
+}
+
+[[nodiscard]] std::uint8_t percent_to_matter_level(int percent) {
+  percent = std::clamp(percent, 0, 100);
+  if (percent <= 0) {
+    return 1;
+  }
+  return static_cast<std::uint8_t>(std::clamp((percent * 254 + 99) / 100, 1, 254));
+}
+
+[[nodiscard]] int matter_level_to_percent(std::uint8_t level) {
+  if (level == 0) {
+    return 0;
+  }
+
+  return std::clamp((static_cast<int>(level) * 100 + 253) / 254, 1, 100);
+}
+
+[[nodiscard]] bool same_volume_control_state(const VolumeControlState &lhs, const VolumeControlState &rhs) {
+  return lhs.muted == rhs.muted && lhs.level == rhs.level;
+}
+
+[[nodiscard]] MatterAccessory build_volume_accessory(std::string name, const VolumeControlState &state) {
+  return MatterAccessory{
+      .id = kVolumeAccessoryId,
+      .name = std::move(name),
+      .kind = MatterAccessoryKind::Volume,
+      .deviceType = MatterAccessoryDeviceType::DimmableLight,
+      .url = {},
+      .durationSeconds = 0,
+      .enabled = true,
+      .on = !state.muted,
+      .level = percent_to_matter_level(state.level),
+  };
 }
 
 [[nodiscard]] fs::path current_executable_path() {
@@ -184,6 +226,13 @@ void ensure_directory(const fs::path &path) {
 
   config.launchAtLogin = bool_or(value, "launchAtLogin", false);
   config.backgroundDaemonEnabled = bool_or(value, "backgroundDaemonEnabled", config.launchAtLogin);
+
+  if (const JsonValue *volumeControl = value.find("volumeControl"); volumeControl != nullptr && volumeControl->is_object()) {
+    config.volumeControl.enabled = bool_or(*volumeControl, "enabled", false);
+    if (const JsonValue *name = volumeControl->find("name"); name != nullptr && name->is_string() && !name->as_string().empty()) {
+      config.volumeControl.name = name->as_string();
+    }
+  }
 
   const JsonValue *targets = value.find("targets");
   if (targets == nullptr || !targets->is_array()) {
@@ -521,9 +570,12 @@ bool try_ping_existing_daemon(const fs::path &socketPath) {
 class NativeDaemon {
  public:
   NativeDaemon()
-      : runtime_(create_matter_runtime(matter_storage_path().string())) {
-    runtime_->setTargetTriggeredHandler([this](const std::string &targetId) { handle_target_triggered(targetId); });
-    runtime_->setTargetTurnedOffHandler([this](const std::string &targetId) { handle_target_turned_off(targetId); });
+      : runtime_(create_matter_runtime(matter_storage_path().string())),
+        volumeController_(create_volume_controller()) {
+    runtime_->setAccessoryTurnedOnHandler([this](const std::string &accessoryId) { handle_accessory_turned_on(accessoryId); });
+    runtime_->setAccessoryTurnedOffHandler([this](const std::string &accessoryId) { handle_accessory_turned_off(accessoryId); });
+    runtime_->setAccessoryLevelChangedHandler(
+        [this](const std::string &accessoryId, std::uint8_t level) { handle_accessory_level_changed(accessoryId, level); });
   }
 
   int run() {
@@ -543,8 +595,11 @@ class NativeDaemon {
 
     write_pid_file();
     config_ = load_config_from_disk();
+    refresh_volume_sync_settings();
+    start_volume_polling();
     if (config_.backgroundDaemonEnabled) {
-      status_ = runtime_->start(config_.targets);
+      status_ = runtime_->start(build_accessories());
+      seed_published_volume_state_from_host();
     }
 
     try {
@@ -641,11 +696,14 @@ class NativeDaemon {
           throw std::runtime_error("sync-config request missing config payload");
         }
         config_ = parse_config(*config);
+        refresh_volume_sync_settings();
         if (config_.backgroundDaemonEnabled) {
-          status_ = runtime_->syncTargets(config_.targets);
+          status_ = runtime_->syncAccessories(build_accessories());
+          seed_published_volume_state_from_host();
         } else {
           runtime_->stop();
           status_ = {};
+          clear_published_volume_state();
         }
         return JsonValue::Object{{"ok", true}};
       }
@@ -666,7 +724,134 @@ class NativeDaemon {
     }
   }
 
-  void handle_target_triggered(const std::string &targetId) {
+  [[nodiscard]] std::vector<MatterAccessory> build_accessories() {
+    std::vector<MatterAccessory> accessories;
+    accessories.reserve(config_.targets.size() + 1);
+
+    for (const auto &target : config_.targets) {
+      accessories.push_back(MatterAccessory{
+          .id = target.id,
+          .name = target.name,
+          .kind = MatterAccessoryKind::Dashboard,
+          .deviceType = MatterAccessoryDeviceType::OnOffPlugInUnit,
+          .url = target.url,
+          .durationSeconds = target.durationSeconds,
+          .enabled = target.enabled,
+          .on = false,
+          .level = 0,
+      });
+    }
+
+    if (config_.volumeControl.enabled && volumeController_ && volumeController_->isSupported()) {
+      try {
+        const VolumeControlState state = volumeController_->getState();
+        if (state.level > 0) {
+          lastKnownVolumeLevel_.store(state.level);
+        }
+        accessories.push_back(build_volume_accessory(config_.volumeControl.name, state));
+      } catch (const std::exception &error) {
+        std::cerr << "Failed to read host volume state: " << error.what() << "\n";
+      }
+    }
+
+    return accessories;
+  }
+
+  void start_volume_polling() {
+    if (volumePollThread_.joinable()) {
+      return;
+    }
+
+    volumePollThread_ = std::thread([this]() { poll_volume_state_loop(); });
+  }
+
+  void refresh_volume_sync_settings() {
+    backgroundMatterEnabled_.store(config_.backgroundDaemonEnabled);
+
+    const bool volumeEnabled = config_.volumeControl.enabled && volumeController_ && volumeController_->isSupported();
+    volumeBridgeEnabled_.store(volumeEnabled);
+
+    std::lock_guard<std::mutex> lock(volumeStateMutex_);
+    volumeAccessoryName_ = config_.volumeControl.name;
+    if (!config_.backgroundDaemonEnabled || !volumeEnabled) {
+      publishedVolumeState_.reset();
+    }
+  }
+
+  [[nodiscard]] bool should_poll_volume() const {
+    return backgroundMatterEnabled_.load() && volumeBridgeEnabled_.load();
+  }
+
+  void clear_published_volume_state() {
+    std::lock_guard<std::mutex> lock(volumeStateMutex_);
+    publishedVolumeState_.reset();
+  }
+
+  void remember_published_volume_state(const VolumeControlState &state) {
+    if (state.level > 0) {
+      lastKnownVolumeLevel_.store(state.level);
+    }
+
+    std::lock_guard<std::mutex> lock(volumeStateMutex_);
+    publishedVolumeState_ = state;
+  }
+
+  void seed_published_volume_state_from_host() {
+    if (!should_poll_volume()) {
+      clear_published_volume_state();
+      return;
+    }
+
+    try {
+      remember_published_volume_state(volumeController_->getState());
+    } catch (const std::exception &error) {
+      clear_published_volume_state();
+      std::cerr << "Failed to seed host volume state tracking: " << error.what() << "\n";
+    }
+  }
+
+  void poll_volume_state_loop() {
+    while (!shuttingDown_.load() && !g_interrupted.load()) {
+      if (!should_poll_volume()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        continue;
+      }
+
+      try {
+        const VolumeControlState state = volumeController_->getState();
+
+        std::string accessoryName;
+        bool changed = false;
+        {
+          std::lock_guard<std::mutex> lock(volumeStateMutex_);
+          accessoryName = volumeAccessoryName_;
+          changed = !publishedVolumeState_.has_value() || !same_volume_control_state(*publishedVolumeState_, state);
+        }
+
+        if (changed) {
+          runtime_->setAccessoryState(build_volume_accessory(accessoryName, state));
+          remember_published_volume_state(state);
+        } else if (state.level > 0) {
+          lastKnownVolumeLevel_.store(state.level);
+        }
+      } catch (const std::exception &error) {
+        std::cerr << "Failed to poll host volume state: " << error.what() << "\n";
+      }
+
+      std::this_thread::sleep_for(kVolumeStatePollInterval);
+    }
+  }
+
+  void handle_accessory_turned_on(const std::string &accessoryId) {
+    if (accessoryId == kVolumeAccessoryId) {
+      handle_volume_turned_on();
+      return;
+    }
+
+    handle_dashboard_triggered(accessoryId);
+  }
+
+  void handle_dashboard_triggered(const std::string &targetId) {
     std::optional<KioskTarget> target;
     {
       std::lock_guard<std::mutex> lock(dashboardMutex_);
@@ -702,7 +887,7 @@ class NativeDaemon {
       }
       if (!shuttingDown_.load()) {
         try {
-          runtime_->setTargetOff(targetId);
+          runtime_->setAccessoryOff(targetId);
         } catch (const std::exception &error) {
           std::cerr << "Failed to clear target " << targetId << ": " << error.what() << "\n";
         }
@@ -711,13 +896,97 @@ class NativeDaemon {
 #endif
   }
 
-  void handle_target_turned_off(const std::string &targetId) {
+  void handle_accessory_turned_off(const std::string &accessoryId) {
+    if (accessoryId == kVolumeAccessoryId) {
+      handle_volume_turned_off();
+      return;
+    }
+
+    const std::string &targetId = accessoryId;
     std::lock_guard<std::mutex> lock(dashboardMutex_);
     const auto it = activeDashboards_.find(targetId);
     if (it == activeDashboards_.end()) {
       return;
     }
     terminate_process(it->second);
+  }
+
+  void handle_accessory_level_changed(const std::string &accessoryId, std::uint8_t level) {
+    if (accessoryId != kVolumeAccessoryId) {
+      return;
+    }
+
+    handle_volume_level_changed(level);
+  }
+
+  void handle_volume_turned_on() {
+    if (!volumeController_ || !volumeController_->isSupported()) {
+      return;
+    }
+
+    try {
+      const VolumeControlState state = volumeController_->getState();
+      if (state.level > 0) {
+        lastKnownVolumeLevel_.store(state.level);
+      }
+
+      volumeController_->setMuted(false);
+      if (state.level <= 0) {
+        const int restoredLevel = std::clamp(lastKnownVolumeLevel_.load(), 1, 100);
+        volumeController_->setLevel(restoredLevel);
+        lastKnownVolumeLevel_.store(restoredLevel);
+      }
+      seed_published_volume_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to turn host volume on: " << error.what() << "\n";
+    }
+  }
+
+  void handle_volume_turned_off() {
+    if (!volumeController_ || !volumeController_->isSupported()) {
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(volumeStateMutex_);
+      if (std::chrono::steady_clock::now() < ignoreVolumeOffUntil_) {
+        return;
+      }
+    }
+
+    try {
+      const VolumeControlState state = volumeController_->getState();
+      if (!state.muted && state.level > 0) {
+        lastKnownVolumeLevel_.store(state.level);
+      }
+      volumeController_->setMuted(true);
+      seed_published_volume_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to mute host volume: " << error.what() << "\n";
+    }
+  }
+
+  void handle_volume_level_changed(std::uint8_t level) {
+    if (!volumeController_ || !volumeController_->isSupported()) {
+      return;
+    }
+
+    try {
+      const int percent = matter_level_to_percent(level);
+      if (percent > 0) {
+        std::lock_guard<std::mutex> lock(volumeStateMutex_);
+        ignoreVolumeOffUntil_ = std::chrono::steady_clock::now() + kVolumeOffDebounceWindow;
+        lastKnownVolumeLevel_.store(percent);
+      }
+
+      volumeController_->setLevel(percent);
+      if (percent > 0) {
+        volumeController_->setMuted(false);
+      }
+      seed_published_volume_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to set host volume level: " << error.what() << "\n";
+    }
   }
 
   [[nodiscard]] fs::path resource_root_path() const {
@@ -778,6 +1047,11 @@ class NativeDaemon {
 
   void cleanup() {
     shuttingDown_.store(true);
+
+    if (volumePollThread_.joinable()) {
+      volumePollThread_.join();
+    }
+
     runtime_->stop();
 
     {
@@ -807,10 +1081,19 @@ class NativeDaemon {
   AppConfig config_;
   MatterStatus status_;
   std::unique_ptr<MatterRuntime> runtime_;
+  std::unique_ptr<VolumeController> volumeController_;
   std::atomic<bool> shuttingDown_{false};
+  std::atomic<bool> backgroundMatterEnabled_{false};
+  std::atomic<bool> volumeBridgeEnabled_{false};
   std::mutex dashboardMutex_;
+  std::mutex volumeStateMutex_;
   std::map<std::string, ChildProcess> activeDashboards_;
+  std::thread volumePollThread_;
+  std::optional<VolumeControlState> publishedVolumeState_;
+  std::string volumeAccessoryName_ = "Volume";
+  std::chrono::steady_clock::time_point ignoreVolumeOffUntil_{};
   int serverFd_ = -1;
+  std::atomic<int> lastKnownVolumeLevel_{50};
 };
 
 void signal_handler(int) {

@@ -1,9 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { AppConfig, KioskTarget } from "../shared/types";
+import { AppConfig, KioskTarget, VolumeControlConfig } from "../shared/types";
 import { getAppDataDir, getConfigPath } from "./app-paths";
 
 const defaultConfig: AppConfig = {
   targets: [],
+  volumeControl: {
+    enabled: false,
+    name: "Volume",
+  },
   launchAtLogin: false,
   backgroundDaemonEnabled: false,
 };
@@ -15,6 +19,7 @@ export function getConfig(): AppConfig {
 
     return {
       targets: sanitizeTargets(parsed.targets),
+      volumeControl: sanitizeVolumeControl(parsed.volumeControl),
       launchAtLogin: parsed.launchAtLogin ?? defaultConfig.launchAtLogin,
       backgroundDaemonEnabled:
         parsed.backgroundDaemonEnabled ?? parsed.launchAtLogin ?? defaultConfig.backgroundDaemonEnabled,
@@ -35,6 +40,20 @@ function sanitizeTargets(targets: AppConfig["targets"] | undefined): KioskTarget
   }
 
   return targets.filter(isKioskTarget).map((target) => ({ ...target }));
+}
+
+function sanitizeVolumeControl(value: Partial<VolumeControlConfig> | undefined): VolumeControlConfig {
+  if (!value || typeof value !== "object") {
+    return { ...defaultConfig.volumeControl };
+  }
+
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : defaultConfig.volumeControl.enabled,
+    name:
+      typeof value.name === "string" && value.name.trim().length > 0
+        ? value.name.trim()
+        : defaultConfig.volumeControl.name,
+  };
 }
 
 function isKioskTarget(value: unknown): value is KioskTarget {

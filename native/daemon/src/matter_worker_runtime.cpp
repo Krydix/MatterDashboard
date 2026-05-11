@@ -116,7 +116,29 @@ struct ChildProcess {
 #endif
 }
 
-[[nodiscard]] JsonValue targets_to_json(const std::vector<KioskTarget> &targets) {
+[[nodiscard]] std::string accessory_kind_to_json(MatterAccessoryKind kind) {
+  switch (kind) {
+    case MatterAccessoryKind::Dashboard:
+      return "dashboard";
+    case MatterAccessoryKind::Volume:
+      return "volume";
+  }
+
+  return "dashboard";
+}
+
+[[nodiscard]] std::string accessory_device_type_to_json(MatterAccessoryDeviceType deviceType) {
+  switch (deviceType) {
+    case MatterAccessoryDeviceType::OnOffPlugInUnit:
+      return "on-off-plug-in-unit";
+    case MatterAccessoryDeviceType::DimmableLight:
+      return "dimmable-light";
+  }
+
+  return "on-off-plug-in-unit";
+}
+
+[[nodiscard]] JsonValue accessories_to_json(const std::vector<MatterAccessory> &targets) {
   JsonValue::Array array;
   array.reserve(targets.size());
 
@@ -124,13 +146,31 @@ struct ChildProcess {
     array.emplace_back(JsonValue::Object{
       {"id", target.id},
       {"name", target.name},
+      {"kind", accessory_kind_to_json(target.kind)},
+      {"deviceType", accessory_device_type_to_json(target.deviceType)},
       {"url", target.url},
       {"durationSeconds", target.durationSeconds},
       {"enabled", target.enabled},
+      {"on", target.on},
+      {"level", static_cast<int>(target.level)},
     });
   }
 
   return JsonValue(std::move(array));
+}
+
+[[nodiscard]] JsonValue accessory_to_json(const MatterAccessory &target) {
+  return JsonValue::Object{
+    {"id", target.id},
+    {"name", target.name},
+    {"kind", accessory_kind_to_json(target.kind)},
+    {"deviceType", accessory_device_type_to_json(target.deviceType)},
+    {"url", target.url},
+    {"durationSeconds", target.durationSeconds},
+    {"enabled", target.enabled},
+    {"on", target.on},
+    {"level", static_cast<int>(target.level)},
+  };
 }
 
 [[nodiscard]] MatterStatus status_from_json(const JsonValue &value) {
@@ -332,26 +372,35 @@ class MatterWorkerRuntime final : public MatterRuntime {
 
   ~MatterWorkerRuntime() override { shutdown(); }
 
-  void setTargetTriggeredHandler(EventHandler handler) override { onTargetTriggered_ = std::move(handler); }
-  void setTargetTurnedOffHandler(EventHandler handler) override { onTargetTurnedOff_ = std::move(handler); }
+  void setAccessoryTurnedOnHandler(EventHandler handler) override { onAccessoryTurnedOn_ = std::move(handler); }
+  void setAccessoryTurnedOffHandler(EventHandler handler) override { onAccessoryTurnedOff_ = std::move(handler); }
+  void setAccessoryLevelChangedHandler(LevelChangedHandler handler) override { onAccessoryLevelChanged_ = std::move(handler); }
 
-  MatterStatus start(const std::vector<KioskTarget> &targets) override {
+  MatterStatus start(const std::vector<MatterAccessory> &targets) override {
     ensure_worker_started();
     return send_status_request(JsonValue::Object{
       {"type", "start"},
       {"storagePath", storagePath_},
-      {"targets", targets_to_json(targets)},
+      {"targets", accessories_to_json(targets)},
     });
   }
 
-  MatterStatus syncTargets(const std::vector<KioskTarget> &targets) override {
+  MatterStatus syncAccessories(const std::vector<MatterAccessory> &targets) override {
     if (!child_.running()) {
       return start(targets);
     }
     return send_status_request(JsonValue::Object{
       {"type", "sync-targets"},
-      {"targets", targets_to_json(targets)},
+      {"targets", accessories_to_json(targets)},
     });
+  }
+
+  void setAccessoryState(const MatterAccessory &accessory) override {
+    if (!child_.running()) {
+      return;
+    }
+
+    send_command(JsonValue::Object{{"type", "set-target-state"}, {"target", accessory_to_json(accessory)}});
   }
 
   MatterStatus getStatus() override {
@@ -370,7 +419,7 @@ class MatterWorkerRuntime final : public MatterRuntime {
     return status_;
   }
 
-  void setTargetOff(const std::string &targetId) override {
+  void setAccessoryOff(const std::string &targetId) override {
     if (!child_.running()) {
       return;
     }
@@ -489,13 +538,18 @@ class MatterWorkerRuntime final : public MatterRuntime {
       return;
     }
 
-    if (type == "target-triggered" && onTargetTriggered_) {
-      onTargetTriggered_(require_string(message, "targetId"));
+    if (type == "target-triggered" && onAccessoryTurnedOn_) {
+      onAccessoryTurnedOn_(require_string(message, "targetId"));
       return;
     }
 
-    if (type == "target-turned-off" && onTargetTurnedOff_) {
-      onTargetTurnedOff_(require_string(message, "targetId"));
+    if (type == "target-turned-off" && onAccessoryTurnedOff_) {
+      onAccessoryTurnedOff_(require_string(message, "targetId"));
+      return;
+    }
+
+    if (type == "target-level-changed" && onAccessoryLevelChanged_) {
+      onAccessoryLevelChanged_(require_string(message, "targetId"), static_cast<std::uint8_t>(int_or(message, "level", 0)));
     }
   }
 
@@ -600,8 +654,9 @@ class MatterWorkerRuntime final : public MatterRuntime {
   std::atomic<int> nextRequestId_{1};
   std::mutex pendingMutex_;
   std::unordered_map<int, std::shared_ptr<PendingResponse>> pendingRequests_;
-  EventHandler onTargetTriggered_;
-  EventHandler onTargetTurnedOff_;
+  EventHandler onAccessoryTurnedOn_;
+  EventHandler onAccessoryTurnedOff_;
+  LevelChangedHandler onAccessoryLevelChanged_;
 };
 
 }  // namespace

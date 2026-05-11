@@ -29,6 +29,7 @@ add_executable(matterkiosk-daemon
   src/matter_chip_process_runtime.cpp
   src/matter_runtime_factory.cpp
   src/matter_worker_runtime.cpp
+  src/volume_controller.cpp
 )
 
 target_include_directories(matterkiosk-daemon PRIVATE src)

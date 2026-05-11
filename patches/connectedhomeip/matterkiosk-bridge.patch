@@ -1,8 +1,8 @@
 diff --git a/examples/bridge-app/linux/main.cpp b/examples/bridge-app/linux/main.cpp
-index 6141f660..8b08262c 100644
+index 6141f660..9a269d99 100644
 --- a/examples/bridge-app/linux/main.cpp
 +++ b/examples/bridge-app/linux/main.cpp
-@@ -17,7 +17,10 @@
+@@ -17,13 +17,18 @@
   */
  
  #include <AppMain.h>
@@ -13,7 +13,15 @@ index 6141f660..8b08262c 100644
  #include <platform/CHIPDeviceLayer.h>
  #include <platform/PlatformManager.h>
  
-@@ -38,6 +41,7 @@
++#include <app-common/zap-generated/cluster-objects.h>
+ #include <app-common/zap-generated/ids/Attributes.h>
+ #include <app-common/zap-generated/ids/Clusters.h>
+ #include <app/AttributeAccessInterfaceRegistry.h>
++#include <app/CommandHandlerInterfaceRegistry.h>
+ #include <app/ConcreteAttributePath.h>
+ #include <app/EventLogging.h>
+ #include <app/reporting/reporting.h>
+@@ -38,6 +43,7 @@
  #include <lib/support/CHIPMem.h>
  #include <lib/support/ZclString.h>
  #include <platform/CommissionableDataProvider.h>
@@ -21,7 +29,7 @@ index 6141f660..8b08262c 100644
  #include <setup_payload/QRCodeSetupPayloadGenerator.h>
  #include <setup_payload/SetupPayload.h>
  
-@@ -53,6 +57,8 @@
+@@ -53,6 +59,8 @@
  #include <cassert>
  #include <iostream>
  #include <string>
@@ -30,19 +38,75 @@ index 6141f660..8b08262c 100644
  #include <vector>
  
  using namespace chip;
-@@ -152,6 +158,19 @@ DECLARE_DYNAMIC_CLUSTER(OnOff::Id, onOffAttrs, ZAP_CLUSTER_MASK(SERVER), onOffIn
+@@ -101,6 +109,8 @@ const int16_t initialMeasuredValue = 100;
+ #define DEVICE_TYPE_BRIDGED_NODE 0x0013
+ // (taken from lo-devices.xml)
+ #define DEVICE_TYPE_LO_ON_OFF_LIGHT 0x0100
++// (taken from lo-devices.xml)
++#define DEVICE_TYPE_LO_DIMMABLE_LIGHT 0x0101
+ // (taken from matter-devices.xml)
+ #define DEVICE_TYPE_POWER_SOURCE 0x0011
+ // (taken from matter-devices.xml)
+@@ -121,6 +131,17 @@ DECLARE_DYNAMIC_ATTRIBUTE_LIST_BEGIN(onOffAttrs)
+ DECLARE_DYNAMIC_ATTRIBUTE(OnOff::Attributes::OnOff::Id, BOOLEAN, 1, 0), /* on/off */
+     DECLARE_DYNAMIC_ATTRIBUTE_LIST_END();
  
++DECLARE_DYNAMIC_ATTRIBUTE_LIST_BEGIN(levelControlAttrs)
++DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::CurrentLevel::Id, INT8U, 1, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::RemainingTime::Id, INT16U, 2, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::MinLevel::Id, INT8U, 1, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::MaxLevel::Id, INT8U, 1, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::Options::Id, BITMAP8, 1, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::OnOffTransitionTime::Id, INT16U, 2, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::FeatureMap::Id, BITMAP32, 4, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE(LevelControl::Attributes::ClusterRevision::Id, INT16U, 2, 0),
++    DECLARE_DYNAMIC_ATTRIBUTE_LIST_END();
++
+ // Declare Descriptor cluster attributes
+ DECLARE_DYNAMIC_ATTRIBUTE_LIST_BEGIN(descriptorAttrs)
+ DECLARE_DYNAMIC_ATTRIBUTE(Descriptor::Attributes::DeviceTypeList::Id, ARRAY, kDescriptorAttributeArraySize, 0), /* device list */
+@@ -145,13 +166,48 @@ constexpr CommandId onOffIncomingCommands[] = {
+     kInvalidCommandId,
+ };
+ 
++constexpr CommandId levelControlIncomingCommands[] = {
++    app::Clusters::LevelControl::Commands::MoveToLevel::Id,
++    app::Clusters::LevelControl::Commands::Move::Id,
++    app::Clusters::LevelControl::Commands::Step::Id,
++    app::Clusters::LevelControl::Commands::Stop::Id,
++    app::Clusters::LevelControl::Commands::MoveToLevelWithOnOff::Id,
++    app::Clusters::LevelControl::Commands::MoveWithOnOff::Id,
++    app::Clusters::LevelControl::Commands::StepWithOnOff::Id,
++    app::Clusters::LevelControl::Commands::StopWithOnOff::Id,
++    kInvalidCommandId,
++};
++
+ DECLARE_DYNAMIC_CLUSTER_LIST_BEGIN(bridgedLightClusters)
+ DECLARE_DYNAMIC_CLUSTER(OnOff::Id, onOffAttrs, ZAP_CLUSTER_MASK(SERVER), onOffIncomingCommands, nullptr),
+     DECLARE_DYNAMIC_CLUSTER(Descriptor::Id, descriptorAttrs, ZAP_CLUSTER_MASK(SERVER), nullptr, nullptr),
+     DECLARE_DYNAMIC_CLUSTER_LIST_END;
+ 
++DECLARE_DYNAMIC_CLUSTER_LIST_BEGIN(bridgedDimmableLightClusters)
++DECLARE_DYNAMIC_CLUSTER(OnOff::Id, onOffAttrs, ZAP_CLUSTER_MASK(SERVER), onOffIncomingCommands, nullptr),
++    DECLARE_DYNAMIC_CLUSTER(LevelControl::Id, levelControlAttrs, ZAP_CLUSTER_MASK(SERVER), levelControlIncomingCommands, nullptr),
++    DECLARE_DYNAMIC_CLUSTER(Descriptor::Id, descriptorAttrs, ZAP_CLUSTER_MASK(SERVER), nullptr, nullptr),
++    DECLARE_DYNAMIC_CLUSTER_LIST_END;
++
  // Declare Bridged Light endpoint
  DECLARE_DYNAMIC_ENDPOINT(bridgedLightEndpoint, bridgedLightClusters);
++DECLARE_DYNAMIC_ENDPOINT(bridgedDimmableLightEndpoint, bridgedDimmableLightClusters);
 +
 +struct MatterKioskBridgeDevice
 +{
 +    std::string targetId;
 +    std::unique_ptr<DeviceOnOff> device;
-+    std::array<DataVersion, MATTER_ARRAY_SIZE(bridgedLightClusters)> dataVersions{};
++    bool dimmable = false;
++    uint8_t level = 254;
++    std::array<DataVersion, MATTER_ARRAY_SIZE(bridgedDimmableLightClusters)> dataVersions{};
 +};
 +
 +bool gMatterKioskMode = false;
++bool gMatterKioskSuppressEvents = false;
 +std::vector<std::unique_ptr<MatterKioskBridgeDevice>> gMatterKioskDevices;
 +std::unordered_map<std::string, MatterKioskBridgeDevice *> gMatterKioskDevicesByTargetId;
 +std::unordered_map<DeviceOnOff *, MatterKioskBridgeDevice *> gMatterKioskDevicesByDevice;
@@ -50,11 +114,131 @@ index 6141f660..8b08262c 100644
  DataVersion gLight1DataVersions[MATTER_ARRAY_SIZE(bridgedLightClusters)];
  DataVersion gLight2DataVersions[MATTER_ARRAY_SIZE(bridgedLightClusters)];
  
-@@ -405,11 +424,14 @@ void ScheduleReportingCallback(Device * dev, ClusterId cluster, AttributeId attr
+@@ -405,11 +461,134 @@ void ScheduleReportingCallback(Device * dev, ClusterId cluster, AttributeId attr
  }
  } // anonymous namespace
  
 +void EmitMatterKioskOnOffEvent(DeviceOnOff * dev);
++void EmitMatterKioskLevelEvent(DeviceOnOff * dev);
++MatterKioskBridgeDevice * FindMatterKioskDeviceByBridge(DeviceOnOff * dev);
++bool SetMatterKioskTargetState(const Json::Value & target);
++
++namespace {
++
++class MatterKioskLevelControlCommandHandler : public CommandHandlerInterface
++{
++public:
++    MatterKioskLevelControlCommandHandler() : CommandHandlerInterface(Optional<EndpointId>::Missing(), LevelControl::Id) {}
++
++    void InvokeCommand(HandlerContext & handlerContext) override;
++};
++
++MatterKioskLevelControlCommandHandler gMatterKioskLevelControlCommandHandler;
++
++constexpr uint32_t kMatterKioskLevelControlFeatureMap = 0x00000003;
++constexpr uint16_t kMatterKioskLevelControlClusterRevision = 0x0007;
++
++[[nodiscard]] uint8_t ClampMatterKioskLevel(int value)
++{
++    return static_cast<uint8_t>(std::clamp(value, 1, 254));
++}
++
++void SetMatterKioskLevel(MatterKioskBridgeDevice * entry, uint8_t level, bool emitEvent)
++{
++    VerifyOrReturn(entry != nullptr && entry->dimmable);
++    level = ClampMatterKioskLevel(level);
++
++    if (entry->level == level)
++    {
++        return;
++    }
++
++    entry->level = level;
++    ScheduleReportingCallback(entry->device.get(), LevelControl::Id, LevelControl::Attributes::CurrentLevel::Id);
++    if (emitEvent)
++    {
++        EmitMatterKioskLevelEvent(entry->device.get());
++    }
++}
++
++MatterKioskBridgeDevice * FindMatterKioskDeviceByEndpointId(EndpointId endpointId)
++{
++    for (const auto & entry : gMatterKioskDevices)
++    {
++        if (entry->device != nullptr && entry->device->GetEndpointId() == endpointId)
++        {
++            return entry.get();
++        }
++    }
++
++    return nullptr;
++}
++
++void ApplyMatterKioskCommandLevel(CommandHandlerInterface::HandlerContext & handlerContext, MatterKioskBridgeDevice * entry,
++                                  uint8_t level, bool withOnOff)
++{
++    VerifyOrReturn(entry != nullptr && entry->dimmable);
++
++    level = ClampMatterKioskLevel(level);
++    if (withOnOff && !entry->device->IsOn())
++    {
++        entry->device->SetOnOff(true);
++    }
++
++    SetMatterKioskLevel(entry, level, true);
++    handlerContext.mCommandHandler.AddStatus(handlerContext.mRequestPath, Protocols::InteractionModel::Status::Success);
++}
++
++void ApplyMatterKioskStep(CommandHandlerInterface::HandlerContext & handlerContext, MatterKioskBridgeDevice * entry,
++                          LevelControl::StepModeEnum stepMode, uint8_t stepSize, bool withOnOff)
++{
++    const int direction = stepMode == LevelControl::StepModeEnum::kUp ? 1 : -1;
++    const int nextLevel = static_cast<int>(entry->level) + (direction * static_cast<int>(stepSize));
++    ApplyMatterKioskCommandLevel(handlerContext, entry, ClampMatterKioskLevel(nextLevel), withOnOff);
++}
++
++void MatterKioskLevelControlCommandHandler::InvokeCommand(HandlerContext & handlerContext)
++{
++    MatterKioskBridgeDevice * entry = FindMatterKioskDeviceByEndpointId(handlerContext.mRequestPath.mEndpointId);
++    if (entry == nullptr || !entry->dimmable)
++    {
++        handlerContext.SetCommandNotHandled();
++        return;
++    }
++
++    switch (handlerContext.mRequestPath.mCommandId)
++    {
++    case LevelControl::Commands::MoveToLevel::Id:
++        HandleCommand<LevelControl::Commands::MoveToLevel::DecodableType>(handlerContext,
++                                                                          [entry](HandlerContext & context, const auto & request) {
++                                                                              ApplyMatterKioskCommandLevel(context, entry, request.level, false);
++                                                                          });
++        return;
++    case LevelControl::Commands::MoveToLevelWithOnOff::Id:
++        HandleCommand<LevelControl::Commands::MoveToLevelWithOnOff::DecodableType>(
++            handlerContext, [entry](HandlerContext & context, const auto & request) {
++                ApplyMatterKioskCommandLevel(context, entry, request.level, true);
++            });
++        return;
++    case LevelControl::Commands::Step::Id:
++        HandleCommand<LevelControl::Commands::Step::DecodableType>(handlerContext,
++                                                                   [entry](HandlerContext & context, const auto & request) {
++                                                                       ApplyMatterKioskStep(context, entry, request.stepMode, request.stepSize, false);
++                                                                   });
++        return;
++    case LevelControl::Commands::StepWithOnOff::Id:
++        HandleCommand<LevelControl::Commands::StepWithOnOff::DecodableType>(
++            handlerContext, [entry](HandlerContext & context, const auto & request) {
++                ApplyMatterKioskStep(context, entry, request.stepMode, request.stepSize, true);
++            });
++        return;
++    default:
++        handlerContext.SetCommandNotHandled();
++        return;
++    }
++}
++
++} // anonymous namespace
 +
  void HandleDeviceOnOffStatusChanged(DeviceOnOff * dev, DeviceOnOff::Changed_t itemChangedMask)
  {
@@ -65,7 +249,114 @@ index 6141f660..8b08262c 100644
      }
  }
  
-@@ -675,6 +697,223 @@ const EmberAfDeviceType gComposedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_
+@@ -485,6 +664,71 @@ Protocols::InteractionModel::Status HandleWriteOnOffAttribute(DeviceOnOff * dev,
+     return Protocols::InteractionModel::Status::Success;
+ }
+ 
++Protocols::InteractionModel::Status HandleReadLevelControlAttribute(MatterKioskBridgeDevice * entry, chip::AttributeId attributeId,
++                                                                    uint8_t * buffer, uint16_t maxReadLength)
++{
++    using namespace LevelControl::Attributes;
++
++    VerifyOrReturnValue(entry != nullptr && entry->dimmable, Protocols::InteractionModel::Status::Failure);
++
++    if ((attributeId == CurrentLevel::Id) && (maxReadLength == 1))
++    {
++        *buffer = entry->level;
++    }
++    else if ((attributeId == RemainingTime::Id) && (maxReadLength == 2))
++    {
++        uint16_t remainingTime = 0;
++        memcpy(buffer, &remainingTime, sizeof(remainingTime));
++    }
++    else if ((attributeId == MinLevel::Id) && (maxReadLength == 1))
++    {
++        *buffer = 1;
++    }
++    else if ((attributeId == MaxLevel::Id) && (maxReadLength == 1))
++    {
++        *buffer = 254;
++    }
++    else if ((attributeId == Options::Id) && (maxReadLength == 1))
++    {
++        *buffer = 0;
++    }
++    else if ((attributeId == OnOffTransitionTime::Id) && (maxReadLength == 2))
++    {
++        uint16_t transitionTime = 0;
++        memcpy(buffer, &transitionTime, sizeof(transitionTime));
++    }
++    else if ((attributeId == FeatureMap::Id) && (maxReadLength == 4))
++    {
++        uint32_t featureMap = kMatterKioskLevelControlFeatureMap;
++        memcpy(buffer, &featureMap, sizeof(featureMap));
++    }
++    else if ((attributeId == ClusterRevision::Id) && (maxReadLength == 2))
++    {
++        uint16_t revision = kMatterKioskLevelControlClusterRevision;
++        memcpy(buffer, &revision, sizeof(revision));
++    }
++    else
++    {
++        return Protocols::InteractionModel::Status::Failure;
++    }
++
++    return Protocols::InteractionModel::Status::Success;
++}
++
++Protocols::InteractionModel::Status HandleWriteLevelControlAttribute(MatterKioskBridgeDevice * entry, chip::AttributeId attributeId,
++                                                                     uint8_t * buffer)
++{
++    VerifyOrReturnValue(entry != nullptr && entry->dimmable, Protocols::InteractionModel::Status::Failure);
++
++    if (attributeId != LevelControl::Attributes::CurrentLevel::Id)
++    {
++        return Protocols::InteractionModel::Status::Failure;
++    }
++
++    SetMatterKioskLevel(entry, *buffer, true);
++    return Protocols::InteractionModel::Status::Success;
++}
++
+ Protocols::InteractionModel::Status HandleReadTempMeasurementAttribute(DeviceTempSensor * dev, chip::AttributeId attributeId,
+                                                                        uint8_t * buffer, uint16_t maxReadLength)
+ {
+@@ -539,6 +783,11 @@ Protocols::InteractionModel::Status emberAfExternalAttributeReadCallback(Endpoin
+         {
+             ret = HandleReadOnOffAttribute(static_cast<DeviceOnOff *>(dev), attributeMetadata->attributeId, buffer, maxReadLength);
+         }
++        else if (clusterId == LevelControl::Id)
++        {
++            ret = HandleReadLevelControlAttribute(FindMatterKioskDeviceByBridge(static_cast<DeviceOnOff *>(dev)),
++                                                  attributeMetadata->attributeId, buffer, maxReadLength);
++        }
+         else if (clusterId == TemperatureMeasurement::Id)
+         {
+             ret = HandleReadTempMeasurementAttribute(static_cast<DeviceTempSensor *>(dev), attributeMetadata->attributeId, buffer,
+@@ -626,6 +875,12 @@ Protocols::InteractionModel::Status emberAfExternalAttributeWriteCallback(Endpoi
+         return HandleWriteOnOffAttribute(static_cast<DeviceOnOff *>(dev), attributeMetadata->attributeId, buffer);
+     }
+ 
++    if (clusterId == LevelControl::Id)
++    {
++        return HandleWriteLevelControlAttribute(FindMatterKioskDeviceByBridge(static_cast<DeviceOnOff *>(dev)),
++                                                attributeMetadata->attributeId, buffer);
++    }
++
+     return Protocols::InteractionModel::Status::Failure;
+ }
+ 
+@@ -667,6 +922,9 @@ void runOnOffRoomAction(Room * room, bool actionOn, EndpointId endpointId, uint1
+ const EmberAfDeviceType gBridgedOnOffDeviceTypes[] = { { DEVICE_TYPE_LO_ON_OFF_LIGHT, DEVICE_VERSION_DEFAULT },
+                                                        { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT } };
+ 
++const EmberAfDeviceType gBridgedDimmableLightDeviceTypes[] = { { DEVICE_TYPE_LO_DIMMABLE_LIGHT, DEVICE_VERSION_DEFAULT },
++                                                               { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT } };
++
+ const EmberAfDeviceType gBridgedComposedDeviceTypes[] = { { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT },
+                                                           { DEVICE_TYPE_POWER_SOURCE, DEVICE_VERSION_DEFAULT } };
+ 
+@@ -675,6 +933,311 @@ const EmberAfDeviceType gComposedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_
  const EmberAfDeviceType gBridgedTempSensorDeviceTypes[] = { { DEVICE_TYPE_TEMP_SENSOR, DEVICE_VERSION_DEFAULT },
                                                              { DEVICE_TYPE_BRIDGED_NODE, DEVICE_VERSION_DEFAULT } };
  
@@ -150,28 +441,40 @@ index 6141f660..8b08262c 100644
 +    return result;
 +}
 +
-+MatterKioskBridgeDevice * EnsureMatterKioskDevice(const std::string & targetId, const std::string & targetName)
++MatterKioskBridgeDevice * EnsureMatterKioskDevice(const std::string & targetId, const std::string & targetName, bool dimmable)
 +{
 +    if (auto * existing = FindMatterKioskDeviceByTargetId(targetId))
 +    {
 +        existing->device->SetName(targetName.c_str());
++        existing->dimmable = dimmable;
 +        return existing;
 +    }
 +
 +    auto entry      = std::make_unique<MatterKioskBridgeDevice>();
 +    entry->targetId = targetId;
 +    entry->device   = std::make_unique<DeviceOnOff>(targetName.c_str(), "MatterKiosk");
++    entry->dimmable = dimmable;
 +    entry->device->SetChangeCallback(&HandleDeviceOnOffStatusChanged);
 +
 +    const std::string uniqueId = MatterKioskUniqueIdForTarget(targetId);
 +    entry->device->SetUniqueId(uniqueId.c_str());
 +
 +#if !CHIP_CONFIG_USE_ENDPOINT_UNIQUE_ID
-+    int index = AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
-+                                  Span<DataVersion>(entry->dataVersions), 1);
++    int index = dimmable
++        ? AddDeviceEndpoint(entry->device.get(), &bridgedDimmableLightEndpoint,
++                            Span<const EmberAfDeviceType>(gBridgedDimmableLightDeviceTypes),
++                            Span<DataVersion>(entry->dataVersions.data(), MATTER_ARRAY_SIZE(bridgedDimmableLightClusters)), 1)
++        : AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
++                            Span<DataVersion>(entry->dataVersions.data(), MATTER_ARRAY_SIZE(bridgedLightClusters)), 1);
 +#else
-+    int index = AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
-+                                  Span<DataVersion>(entry->dataVersions), chip::CharSpan::fromCharString(uniqueId.c_str()), 1);
++    int index = dimmable
++        ? AddDeviceEndpoint(entry->device.get(), &bridgedDimmableLightEndpoint,
++                            Span<const EmberAfDeviceType>(gBridgedDimmableLightDeviceTypes),
++                            Span<DataVersion>(entry->dataVersions.data(), MATTER_ARRAY_SIZE(bridgedDimmableLightClusters)),
++                            chip::CharSpan::fromCharString(uniqueId.c_str()), 1)
++        : AddDeviceEndpoint(entry->device.get(), &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
++                            Span<DataVersion>(entry->dataVersions.data(), MATTER_ARRAY_SIZE(bridgedLightClusters)),
++                            chip::CharSpan::fromCharString(uniqueId.c_str()), 1);
 +#endif
 +
 +    VerifyOrReturnValue(index >= 0, nullptr);
@@ -201,7 +504,16 @@ index 6141f660..8b08262c 100644
 +
 +void SyncMatterKioskTargets(const Json::Value & targets)
 +{
-+    std::unordered_map<std::string, std::string> desiredTargets;
++    struct DesiredTarget
++    {
++        std::string name;
++        bool dimmable = false;
++        bool on = false;
++        uint8_t level = 254;
++    };
++
++    std::unordered_map<std::string, DesiredTarget> desiredTargets;
++    gMatterKioskSuppressEvents = true;
 +
 +    if (targets.isArray())
 +    {
@@ -225,15 +537,27 @@ index 6141f660..8b08262c 100644
 +            }
 +
 +            const std::string targetName = entry.isMember("name") && entry["name"].isString() ? entry["name"].asString() : targetId;
-+            desiredTargets[targetId]     = targetName;
-+            VerifyOrDie(EnsureMatterKioskDevice(targetId, targetName) != nullptr);
++            const std::string deviceType = entry.isMember("deviceType") && entry["deviceType"].isString()
++                ? entry["deviceType"].asString()
++                : "on-off-plug-in-unit";
++            const bool dimmable = deviceType == "dimmable-light";
++            const bool on = entry.isMember("on") && entry["on"].isBool() ? entry["on"].asBool() : false;
++            const uint8_t level = entry.isMember("level") && entry["level"].isInt() ? ClampMatterKioskLevel(entry["level"].asInt()) : 254;
++
++            desiredTargets[targetId] = DesiredTarget{
++                .name = targetName,
++                .dimmable = dimmable,
++                .on = on,
++                .level = level,
++            };
 +        }
 +    }
 +
 +    std::vector<std::string> targetIdsToRemove;
 +    for (const auto & existing : gMatterKioskDevices)
 +    {
-+        if (desiredTargets.find(existing->targetId) == desiredTargets.end())
++        const auto it = desiredTargets.find(existing->targetId);
++        if (it == desiredTargets.end() || it->second.dimmable != existing->dimmable)
 +        {
 +            targetIdsToRemove.push_back(existing->targetId);
 +        }
@@ -243,13 +567,54 @@ index 6141f660..8b08262c 100644
 +    {
 +        RemoveMatterKioskDevice(targetId);
 +    }
++
++    for (const auto & [targetId, target] : desiredTargets)
++    {
++        MatterKioskBridgeDevice * device = EnsureMatterKioskDevice(targetId, target.name, target.dimmable);
++        VerifyOrDie(device != nullptr);
++
++        if (target.dimmable)
++        {
++            SetMatterKioskLevel(device, target.level, false);
++        }
++        device->device->SetOnOff(target.on);
++    }
++
++    gMatterKioskSuppressEvents = false;
 +}
 +
 +bool SetMatterKioskTargetOff(const std::string & targetId)
 +{
++    Json::Value target(Json::objectValue);
++    target["id"] = targetId;
++    target["on"] = false;
++    return SetMatterKioskTargetState(target);
++}
++
++bool SetMatterKioskTargetState(const Json::Value & target)
++{
++    VerifyOrReturnValue(target.isObject(), false);
++
++    const std::string targetId = target.get("id", "").asString();
++    VerifyOrReturnValue(!targetId.empty(), false);
++
 +    MatterKioskBridgeDevice * existing = FindMatterKioskDeviceByTargetId(targetId);
 +    VerifyOrReturnValue(existing != nullptr, false);
-+    existing->device->SetOnOff(false);
++
++    const bool previousSuppressState = gMatterKioskSuppressEvents;
++    gMatterKioskSuppressEvents = true;
++
++    if (existing->dimmable && target.isMember("level") && target["level"].isInt())
++    {
++        SetMatterKioskLevel(existing, ClampMatterKioskLevel(target["level"].asInt()), false);
++    }
++
++    if (target.isMember("on") && target["on"].isBool())
++    {
++        existing->device->SetOnOff(target["on"].asBool());
++    }
++
++    gMatterKioskSuppressEvents = previousSuppressState;
 +    return true;
 +}
 +
@@ -275,7 +640,7 @@ index 6141f660..8b08262c 100644
 +
 +void EmitMatterKioskOnOffEvent(DeviceOnOff * dev)
 +{
-+    VerifyOrReturn(gMatterKioskMode);
++    VerifyOrReturn(gMatterKioskMode && !gMatterKioskSuppressEvents);
 +
 +    MatterKioskBridgeDevice * entry = FindMatterKioskDeviceByBridge(dev);
 +    VerifyOrReturn(entry != nullptr);
@@ -286,10 +651,24 @@ index 6141f660..8b08262c 100644
 +    WriteMatterKioskMessage(event);
 +}
 +
++void EmitMatterKioskLevelEvent(DeviceOnOff * dev)
++{
++    VerifyOrReturn(gMatterKioskMode && !gMatterKioskSuppressEvents);
++
++    MatterKioskBridgeDevice * entry = FindMatterKioskDeviceByBridge(dev);
++    VerifyOrReturn(entry != nullptr && entry->dimmable);
++
++    Json::Value event(Json::objectValue);
++    event["type"]     = "target-level-changed";
++    event["targetId"] = entry->targetId;
++    event["level"]    = entry->level;
++    WriteMatterKioskMessage(event);
++}
++
  #define POLL_INTERVAL_MS (100)
  uint8_t poll_prescale = 0;
  
-@@ -839,6 +1078,35 @@ void ApplicationInit()
+@@ -839,6 +1402,37 @@ void ApplicationInit()
  {
      // Clear out the device database
      memset(gDevices, 0, sizeof(gDevices));
@@ -320,12 +699,14 @@ index 6141f660..8b08262c 100644
 +        }
 +
 +        AttributeAccessInterfaceRegistry::Instance().Register(&gPowerAttrAccess);
++        TEMPORARY_RETURN_IGNORED CommandHandlerInterfaceRegistry::Instance().RegisterCommandHandler(
++            &gMatterKioskLevelControlCommandHandler);
 +        return;
 +    }
  
      // Setup Mock Devices
      Light1.SetReachable(true);
-@@ -870,16 +1138,6 @@ void ApplicationInit()
+@@ -870,16 +1464,6 @@ void ApplicationInit()
      ComposedTempSensor2.SetChangeCallback(&HandleDeviceTempSensorStatusChanged);
      ComposedPowerSource.SetChangeCallback(&HandleDevicePowerSourceStatusChanged);
  
@@ -342,7 +723,7 @@ index 6141f660..8b08262c 100644
      // Add light 1 -> will be mapped to ZCL endpoints 3
  #if !CHIP_CONFIG_USE_ENDPOINT_UNIQUE_ID
      AddDeviceEndpoint(&Light1, &bridgedLightEndpoint, Span<const EmberAfDeviceType>(gBridgedOnOffDeviceTypes),
-@@ -1016,7 +1274,9 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
+@@ -1016,7 +1600,9 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
          return nullptr;
      }
  
@@ -353,7 +734,7 @@ index 6141f660..8b08262c 100644
      {
          ChipLogError(NotSpecified, "Bridge App: Invalid JSON command received: command name is missing");
          return nullptr;
-@@ -1028,9 +1288,61 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
+@@ -1028,9 +1614,74 @@ BridgeAppCommandHandler * BridgeAppCommandHandler::FromJSON(const char * json)
  void BridgeAppCommandHandler::HandleCommand(intptr_t context)
  {
      auto * self      = reinterpret_cast<BridgeAppCommandHandler *>(context);
@@ -370,8 +751,7 @@ index 6141f660..8b08262c 100644
 +        Platform::Delete(self);
 +        return;
 +    }
- 
--    VerifyOrExit(!self->mJsonValue.empty(), ChipLogError(NotSpecified, "Invalid JSON event command received"));
++
 +    if (self->mJsonValue.isMember("type") && self->mJsonValue["type"].isString())
 +    {
 +        const std::string type = self->mJsonValue["type"].asString();
@@ -402,12 +782,26 @@ index 6141f660..8b08262c 100644
 +                result = BuildMatterKioskStatusResult();
 +            }
 +        }
++        else if (type == "set-target-state")
++        {
++            const Json::Value & target = self->mJsonValue["target"];
++            if (!target.isObject() || !SetMatterKioskTargetState(target))
++            {
++                ok    = false;
++                error = "Unknown targetId";
++            }
++            else
++            {
++                result = BuildMatterKioskStatusResult();
++            }
++        }
 +        else
 +        {
 +            ok    = false;
 +            error = "Unsupported command";
 +        }
-+
+ 
+-    VerifyOrExit(!self->mJsonValue.empty(), ChipLogError(NotSpecified, "Invalid JSON event command received"));
 +        WriteMatterKioskResponse(requestId, ok, ok ? &result : nullptr, error);
 +        Platform::Delete(self);
 +        return;
@@ -417,7 +811,7 @@ index 6141f660..8b08262c 100644
  
      if (name == "SimulateConfigurationVersionChange")
      {
-@@ -1042,7 +1354,6 @@ void BridgeAppCommandHandler::HandleCommand(intptr_t context)
+@@ -1042,7 +1693,6 @@ void BridgeAppCommandHandler::HandleCommand(intptr_t context)
          VerifyOrDie(false && "Named pipe command not supported, see log above.");
      }
  

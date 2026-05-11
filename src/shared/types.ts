@@ -6,8 +6,42 @@ export interface KioskTarget {
   enabled: boolean;
 }
 
+export interface VolumeControlConfig {
+  enabled: boolean;
+  name: string;
+}
+
+export type MatterAccessoryKind = "dashboard" | "volume";
+
+export type MatterAccessoryDeviceType = "on-off-plug-in-unit" | "dimmable-light";
+
+interface MatterAccessoryBase {
+  id: string;
+  name: string;
+  kind: MatterAccessoryKind;
+  deviceType: MatterAccessoryDeviceType;
+  enabled: boolean;
+  on: boolean;
+}
+
+export interface DashboardMatterAccessory extends MatterAccessoryBase {
+  kind: "dashboard";
+  deviceType: "on-off-plug-in-unit";
+  url: string;
+  durationSeconds: number;
+}
+
+export interface VolumeMatterAccessory extends MatterAccessoryBase {
+  kind: "volume";
+  deviceType: "dimmable-light";
+  level: number;
+}
+
+export type MatterAccessory = DashboardMatterAccessory | VolumeMatterAccessory;
+
 export interface AppConfig {
   targets: KioskTarget[];
+  volumeControl: VolumeControlConfig;
   launchAtLogin: boolean;
   backgroundDaemonEnabled: boolean;
 }
