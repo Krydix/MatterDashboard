@@ -161,12 +161,20 @@ function describeTarget(target: KioskTarget): string {
   if (target.provider === "trmnl") {
     const recipeId = target.trmnl?.importSource?.recipeId;
     if (recipeId) {
+      if (target.trmnl?.transform?.enabled) {
+        return `TRMNL recipe #${recipeId} (local transform sandbox)`;
+      }
+
       return `TRMNL recipe #${recipeId}`;
     }
 
     const pollingCount = target.trmnl?.polling?.enabled ? target.trmnl.polling.exchanges.length : 0;
     if (pollingCount > 0) {
       return `Native TRMNL runtime (${pollingCount} exchange${pollingCount === 1 ? "" : "s"})`;
+    }
+
+    if (target.trmnl?.transform?.enabled) {
+      return "Native TRMNL runtime (local transform + Liquid)";
     }
 
     return "Native TRMNL runtime (Liquid template + JSON data)";

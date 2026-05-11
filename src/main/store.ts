@@ -8,6 +8,7 @@ import {
   TrmnlImportedRecipe,
   TrmnlPollExchange,
   TrmnlPollingConfig,
+  TrmnlTransformConfig,
   VolumeControlConfig,
 } from "../shared/types";
 import { getAppDataDir, getConfigPath } from "./app-paths";
@@ -118,6 +119,7 @@ function sanitizeTrmnlConfig(value: Partial<TrmnlDashboardConfig> | undefined): 
     jsUrl: typeof value.jsUrl === "string" && value.jsUrl.trim().length > 0 ? value.jsUrl.trim() : undefined,
     importSource: sanitizeImportedRecipe(value.importSource),
     polling: sanitizePollingConfig(value.polling),
+    transform: sanitizeTransformConfig(value.transform),
   };
 }
 
@@ -222,4 +224,28 @@ function sanitizeHeaderRecord(value: unknown): Record<string, string> {
     }
     return all;
   }, {});
+}
+
+function sanitizeTransformConfig(value: unknown): TrmnlTransformConfig | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const transform = value as Partial<TrmnlTransformConfig>;
+  if (typeof transform.script !== "string" || transform.script.trim().length === 0) {
+    return undefined;
+  }
+
+  return {
+    enabled: transform.enabled !== false,
+    intervalSeconds:
+      typeof transform.intervalSeconds === "number" && Number.isFinite(transform.intervalSeconds) && transform.intervalSeconds > 0
+        ? Math.round(transform.intervalSeconds)
+        : 60,
+    timeoutMs:
+      typeof transform.timeoutMs === "number" && Number.isFinite(transform.timeoutMs) && transform.timeoutMs >= 1000
+        ? Math.round(transform.timeoutMs)
+        : 15000,
+    script: transform.script,
+  };
 }

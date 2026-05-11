@@ -1,7 +1,7 @@
 import path from "node:path";
 import JSZip from "jszip";
 import { load as loadYaml } from "js-yaml";
-import { ImportedTrmnlTarget, TrmnlDashboardConfig, TrmnlPollExchange } from "../shared/types";
+import { ImportedTrmnlTarget, TrmnlDashboardConfig, TrmnlPollExchange, TrmnlTransformConfig } from "../shared/types";
 
 const RECIPE_PATH_PATTERN = /\/recipes\/(?<id>\d+)(?:\/|$)/;
 const ARCHIVE_PATH_PATTERN = /\/api\/plugin_settings\/(?<id>\d+)\/archive(?:\/|$)/;
@@ -27,7 +27,8 @@ export async function importTrmnlRecipe(source: string): Promise<ImportedTrmnlTa
 
   const fields = Array.isArray(settings["custom_fields"]) ? settings["custom_fields"] : [];
   const data = buildImportedData(fields, settings["static_data"]);
-  const polling = buildPollingConfig(settings, fields, data);
+  const transform = buildTransformConfig(archive, settings);
+  const polling = transform ? undefined : buildPollingConfig(settings, fields, data);
 
   const trmnl: TrmnlDashboardConfig = {
     template: buildTemplate(archive),
@@ -42,6 +43,7 @@ export async function importTrmnlRecipe(source: string): Promise<ImportedTrmnlTa
       importedAt: new Date().toISOString(),
     },
     polling,
+    transform,
   };
 
   return {
@@ -151,10 +153,6 @@ async function readArchive(buffer: Buffer): Promise<ArchiveFiles> {
 }
 
 function parseRecipeSettings(archive: ArchiveFiles): Record<string, unknown> {
-  if (archive["transform"]) {
-    throw new Error("This recipe uses a server-side transform, which MatterKiosk does not support yet.");
-  }
-
   const rawSettings = archive["settings"];
   if (!rawSettings) {
     throw new Error("The recipe archive is missing settings.yml.");
@@ -166,6 +164,23 @@ function parseRecipeSettings(archive: ArchiveFiles): Record<string, unknown> {
   }
 
   return parsed;
+}
+
+function buildTransformConfig(
+  archive: ArchiveFiles,
+  settings: Record<string, unknown>,
+): TrmnlTransformConfig | undefined {
+  const script = archive["transform"]?.trim();
+  if (!script) {
+    return undefined;
+  }
+
+  return {
+    enabled: true,
+    intervalSeconds: Math.max(1, readInteger(settings["refresh_interval"]) ?? 60),
+    timeoutMs: 15_000,
+    script,
+  };
 }
 
 function buildImportedData(fields: unknown[], rawStaticData: unknown): Record<string, unknown> {

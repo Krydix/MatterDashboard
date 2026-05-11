@@ -235,6 +235,12 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
                     {trmnl.polling.intervalSeconds}s and rewrites the local runtime automatically.
                   </span>
                 )}
+                {trmnl.transform?.enabled && (
+                  <span className="field-help">
+                    Runs the imported transform in an on-demand sandbox every {trmnl.transform.intervalSeconds}s
+                    while the dashboard is active. Timeout: {Math.round(trmnl.transform.timeoutMs / 1000)}s.
+                  </span>
+                )}
               </div>
 
               <div className="field">
@@ -332,5 +338,6 @@ function ensureTrmnlConfig(config: KioskTarget["trmnl"]): TrmnlDashboardConfig {
     jsUrl: config?.jsUrl,
     importSource: config?.importSource,
     polling: config?.polling,
+    transform: config?.transform,
   };
 }

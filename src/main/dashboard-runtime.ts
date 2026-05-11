@@ -6,6 +6,7 @@ import { XMLParser } from "fast-xml-parser";
 import { Liquid } from "liquidjs";
 import { KioskTarget, TrmnlAssetMode, TrmnlDashboardConfig, TrmnlPollExchange } from "../shared/types";
 import { getRuntimeDir } from "./app-paths";
+import { TrmnlTransformRunnerHandle, createTrmnlTransformRunner } from "./trmnl-transform-runner";
 
 const DEFAULT_TRMNL_CSS_URL = "https://trmnl.com/css/latest/plugins.css";
 const DEFAULT_TRMNL_JS_URL = "https://trmnl.com/js/latest/plugins.js";
@@ -13,12 +14,18 @@ const FRAMEWORK_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
 
 interface TrmnlRuntimeState {
   target: KioskTarget;
+  activeSessions: number;
   renderPromise?: Promise<string>;
   refreshTimer?: NodeJS.Timeout;
   refreshIntervalMs?: number;
   exchangeData?: unknown[];
   exchangeErrors?: Record<string, string>;
   exchangeFetchedAt?: number;
+  transformData?: unknown;
+  transformLogs?: string[];
+  transformError?: string;
+  transformFetchedAt?: number;
+  transformRunner?: TrmnlTransformRunnerHandle;
 }
 
 const liquid = new Liquid({
@@ -39,14 +46,52 @@ export async function resolveKioskTargetUrl(target: KioskTarget): Promise<string
     return target.url;
   }
 
-  return await renderTrmnlRuntime(target);
+  return await buildTransientTrmnlRuntimeUrl(target);
 }
 
-async function renderTrmnlRuntime(target: KioskTarget): Promise<string> {
-  const state = runtimeStates.get(target.id) ?? { target };
+export async function activateKioskTarget(target: KioskTarget): Promise<{ url: string; deactivate: () => Promise<void> }> {
+  if (target.provider !== "trmnl") {
+    return {
+      url: target.url,
+      deactivate: async () => {},
+    };
+  }
+
+  const state = runtimeStates.get(target.id) ?? { target, activeSessions: 0 };
   state.target = target;
+  state.activeSessions += 1;
   runtimeStates.set(target.id, state);
 
+  const url = await renderTrmnlRuntime(state);
+  return {
+    url,
+    deactivate: async () => {
+      await deactivateKioskTarget(target.id);
+    },
+  };
+}
+
+export async function deactivateKioskTarget(targetId: string): Promise<void> {
+  const state = runtimeStates.get(targetId);
+  if (!state) {
+    return;
+  }
+
+  state.activeSessions = Math.max(0, state.activeSessions - 1);
+  if (state.activeSessions > 0) {
+    return;
+  }
+
+  clearRefreshTimer(state);
+  if (state.transformRunner) {
+    await state.transformRunner.dispose();
+    state.transformRunner = undefined;
+  }
+  runtimeStates.delete(targetId);
+}
+
+async function renderTrmnlRuntime(state: TrmnlRuntimeState): Promise<string> {
+  const target = state.target;
   if (!state.renderPromise) {
     state.renderPromise = buildTrmnlRuntimeUrl(state).finally(() => {
       const latest = runtimeStates.get(target.id);
@@ -59,6 +104,13 @@ async function renderTrmnlRuntime(target: KioskTarget): Promise<string> {
   return await state.renderPromise;
 }
 
+async function buildTransientTrmnlRuntimeUrl(target: KioskTarget): Promise<string> {
+  return await buildTrmnlRuntimeUrl({
+    target,
+    activeSessions: 0,
+  });
+}
+
 async function buildTrmnlRuntimeUrl(state: TrmnlRuntimeState): Promise<string> {
   const target = state.target;
   const trmnl = target.trmnl;
@@ -68,10 +120,11 @@ async function buildTrmnlRuntimeUrl(state: TrmnlRuntimeState): Promise<string> {
 
   const data = parseTrmnlData(target);
   const fields = parseTrmnlFields(target);
-  const sources = await resolveExchangeSources(state, data, fields);
+  const resolvedData = await resolveTransformData(state, data, fields);
+  const sources = await resolveExchangeSources(state, resolvedData, fields);
   const renderedMarkup = await liquid.parseAndRender(
     trmnl.template,
-    buildLiquidScope(target, data, fields, sources, state.exchangeErrors ?? {}),
+    buildLiquidScope(target, resolvedData, fields, sources, state.exchangeErrors ?? {}, state.transformLogs ?? []),
   );
   const assets = await resolveFrameworkAssets(trmnl);
   const refreshMs = getPollingRefreshMs(trmnl);
@@ -89,9 +142,48 @@ async function buildTrmnlRuntimeUrl(state: TrmnlRuntimeState): Promise<string> {
   const filePath = path.join(runtimeDir, `${target.id}.html`);
   writeFileSync(filePath, html, "utf8");
 
-  configureRefreshTimer(state, refreshMs);
+  if (state.activeSessions > 0) {
+    configureRefreshTimer(state, refreshMs);
+  }
 
   return pathToFileURL(filePath).toString();
+}
+
+async function resolveTransformData(
+  state: TrmnlRuntimeState,
+  baseData: unknown,
+  fields: unknown[],
+): Promise<unknown> {
+  const transform = state.target.trmnl?.transform;
+  if (!transform?.enabled || !transform.script.trim()) {
+    state.transformData = undefined;
+    state.transformLogs = undefined;
+    state.transformError = undefined;
+    state.transformFetchedAt = undefined;
+    return baseData;
+  }
+
+  const now = Date.now();
+  const refreshMs = getTransformRefreshMs(state.target.trmnl);
+  if (state.transformData && state.transformFetchedAt && now - state.transformFetchedAt < refreshMs) {
+    return mergeTransformData(baseData, state.transformData);
+  }
+
+  const runner = await getTransformRunner(state);
+  try {
+    const result = await runner.run(transform.script, buildTransformInput(state.target, baseData, fields), transform.timeoutMs);
+    state.transformData = normalizeTransformResult(result.data);
+    state.transformLogs = result.logs;
+    state.transformError = undefined;
+    state.transformFetchedAt = now;
+  } catch (error) {
+    state.transformError = error instanceof Error ? error.message : String(error);
+    if (!state.transformData) {
+      throw new Error(`Transform failed for "${state.target.name}": ${state.transformError}`);
+    }
+  }
+
+  return mergeTransformData(baseData, state.transformData);
 }
 
 async function resolveExchangeSources(
@@ -114,7 +206,14 @@ async function resolveExchangeSources(
     return state.exchangeData;
   }
 
-  const requestScope = buildLiquidScope(state.target, data, fields, [], state.exchangeErrors ?? {});
+  const requestScope = buildLiquidScope(
+    state.target,
+    data,
+    fields,
+    [],
+    state.exchangeErrors ?? {},
+    state.transformLogs ?? [],
+  );
   const previousData = state.exchangeData ?? [];
   const nextData: unknown[] = [];
   const errors: Record<string, string> = {};
@@ -258,10 +357,12 @@ function buildLiquidScope(
   fields: unknown[],
   sources: unknown[],
   exchangeErrors: Record<string, string>,
+  transformLogs: string[],
 ): Record<string, unknown> {
   const objectData = isRecord(data) ? data : {};
   const fieldValues = buildFieldValues(fields, objectData);
   const resolvedSources = sources.length > 0 ? sources : [data];
+  const primarySource = resolvedSources.length === 1 && isRecord(resolvedSources[0]) ? resolvedSources[0] : undefined;
   const sourceMap = resolvedSources.reduce<Record<string, unknown>>((all, entry, index) => {
     all[`source_${index + 1}`] = entry;
     return all;
@@ -269,6 +370,7 @@ function buildLiquidScope(
 
   return {
     ...objectData,
+    ...(primarySource ?? {}),
     ...sourceMap,
     extension: {
       label: target.name,
@@ -283,8 +385,10 @@ function buildLiquidScope(
         name: target.name,
       },
       exchange_errors: exchangeErrors,
+      transform_logs: transformLogs,
     },
     trmnl: {
+      system: buildTrmnlSystemContext(),
       plugin_settings: {
         instance_name: target.name,
         custom_fields: fields,
@@ -435,7 +539,17 @@ function sanitizeAssetMode(mode: TrmnlAssetMode | undefined): TrmnlAssetMode {
 }
 
 function getPollingRefreshMs(trmnl: TrmnlDashboardConfig | undefined): number {
+  const transformRefreshMs = getTransformRefreshMs(trmnl);
+  if (transformRefreshMs > 0) {
+    return transformRefreshMs;
+  }
+
   const intervalSeconds = trmnl?.polling?.enabled ? trmnl.polling.intervalSeconds : 0;
+  return intervalSeconds > 0 ? intervalSeconds * 1000 : 0;
+}
+
+function getTransformRefreshMs(trmnl: TrmnlDashboardConfig | undefined): number {
+  const intervalSeconds = trmnl?.transform?.enabled ? trmnl.transform.intervalSeconds : 0;
   return intervalSeconds > 0 ? intervalSeconds * 1000 : 0;
 }
 
@@ -452,7 +566,7 @@ function configureRefreshTimer(state: TrmnlRuntimeState, refreshMs: number): voi
   clearRefreshTimer(state);
   state.refreshIntervalMs = refreshMs;
   state.refreshTimer = setInterval(() => {
-    void renderTrmnlRuntime(state.target).catch((error) => {
+    void renderTrmnlRuntime(state).catch((error) => {
       console.warn(`[TRMNL] Failed to refresh ${state.target.name}:`, error);
     });
   }, refreshMs);
@@ -465,6 +579,80 @@ function clearRefreshTimer(state: TrmnlRuntimeState): void {
     state.refreshTimer = undefined;
     state.refreshIntervalMs = undefined;
   }
+}
+
+async function getTransformRunner(state: TrmnlRuntimeState): Promise<TrmnlTransformRunnerHandle> {
+  if (!state.transformRunner) {
+    state.transformRunner = await createTrmnlTransformRunner();
+  }
+
+  return state.transformRunner;
+}
+
+function buildTransformInput(
+  target: KioskTarget,
+  data: unknown,
+  fields: unknown[],
+): Record<string, unknown> {
+  const objectData = isRecord(data) ? data : {};
+  const values = buildFieldValues(fields, objectData);
+
+  return {
+    data: objectData,
+    fields: values,
+    extension: {
+      label: target.name,
+      data: objectData,
+      fields,
+      values,
+    },
+    matterkiosk: {
+      target: {
+        id: target.id,
+        name: target.name,
+      },
+    },
+    trmnl: {
+      system: buildTrmnlSystemContext(),
+      plugin_settings: {
+        instance_name: target.name,
+        custom_fields: fields,
+        custom_fields_values: values,
+      },
+    },
+  };
+}
+
+function buildTrmnlSystemContext(): Record<string, unknown> {
+  const now = new Date();
+  const epochSeconds = Math.floor(now.getTime() / 1000);
+  return {
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timestamp_utc: epochSeconds,
+    timestamp_unix: epochSeconds,
+    timestamp_iso_utc: now.toISOString(),
+    timestamp_local: now.toLocaleString(),
+  };
+}
+
+function normalizeTransformResult(value: unknown): unknown {
+  if (isRecord(value) && "data" in value) {
+    return value["data"];
+  }
+
+  return value;
+}
+
+function mergeTransformData(baseData: unknown, transformData: unknown): unknown {
+  if (isRecord(baseData) && isRecord(transformData)) {
+    return {
+      ...baseData,
+      ...transformData,
+    };
+  }
+
+  return transformData ?? baseData;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

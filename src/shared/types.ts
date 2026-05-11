@@ -6,6 +6,13 @@ export type TrmnlImportKind = "recipe";
 
 export type TrmnlExchangeFormat = "auto" | "json" | "text" | "xml";
 
+export interface TrmnlTransformConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  timeoutMs: number;
+  script: string;
+}
+
 export interface TrmnlImportedRecipe {
   kind: TrmnlImportKind;
   recipeId: string;
@@ -39,6 +46,7 @@ export interface TrmnlDashboardConfig {
   jsUrl?: string;
   importSource?: TrmnlImportedRecipe;
   polling?: TrmnlPollingConfig;
+  transform?: TrmnlTransformConfig;
 }
 
 export interface ImportedTrmnlTarget {

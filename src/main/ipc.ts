@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ipcMain } from "electron";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
-import { resolveKioskTargetUrl } from "./dashboard-runtime";
+import { activateKioskTarget } from "./dashboard-runtime";
 import { importTrmnlRecipe } from "./trmnl-import";
 import { getConfig, saveConfig } from "./store";
 import { openKioskWindow, showSettingsWindow } from "./windows";
@@ -107,8 +107,12 @@ export function registerIpcHandlers(): void {
     const config = getConfig();
     const target = config.targets.find((t) => t.id === targetId);
     if (target) {
-      await openKioskWindow(await resolveKioskTargetUrl(target), target.durationSeconds * 1000, {
+      const activeTarget = await activateKioskTarget(target);
+      await openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
         restorePreviousApp: true,
+        onClosed: () => {
+          void activeTarget.deactivate();
+        },
       }).closed;
     }
   });
