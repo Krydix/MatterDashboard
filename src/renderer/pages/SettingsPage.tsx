@@ -5,10 +5,15 @@ export default function SettingsPage(): React.ReactElement {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [daemonState, setDaemonState] = useState<DaemonState | null>(null);
   const [saving, setSaving] = useState(false);
+  const [volumeName, setVolumeName] = useState("");
 
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    setVolumeName(config?.volumeControl.name ?? "");
+  }, [config?.volumeControl.name]);
 
   async function load() {
     const [nextConfig, nextDaemonState] = await Promise.all([
@@ -57,10 +62,14 @@ export default function SettingsPage(): React.ReactElement {
     });
   }
 
-  async function handleVolumeNameBlur(e: React.ChangeEvent<HTMLInputElement>) {
+  async function commitVolumeName() {
     if (!config) return;
 
-    const name = e.target.value.trim() || "Volume";
+    const name = volumeName.trim() || "Volume";
+    if (name !== volumeName) {
+      setVolumeName(name);
+    }
+
     if (name === config.volumeControl.name) {
       return;
     }
@@ -141,24 +150,25 @@ export default function SettingsPage(): React.ReactElement {
           </label>
         </div>
 
-        <div>
-          <label htmlFor="volume-accessory-name" style={{ display: "block", fontWeight: 600, marginBottom: 6 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label htmlFor="volume-accessory-name">
             Accessory Name
           </label>
           <input
             id="volume-accessory-name"
             type="text"
-            defaultValue={config.volumeControl.name}
-            onBlur={handleVolumeNameBlur}
-            disabled={saving || window.matterkiosk.platform !== "darwin"}
-            style={{
-              width: "100%",
-              padding: "10px 12px",
-              borderRadius: 10,
-              border: "1px solid var(--border-color)",
-              background: "var(--panel-bg)",
-              color: "var(--text-primary)",
+            value={volumeName}
+            placeholder="Volume"
+            onChange={(e) => setVolumeName(e.target.value)}
+            onBlur={() => {
+              void commitVolumeName();
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.currentTarget.blur();
+              }
+            }}
+            disabled={saving || window.matterkiosk.platform !== "darwin"}
           />
           <div style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 8 }}>
             {window.matterkiosk.platform === "darwin"
