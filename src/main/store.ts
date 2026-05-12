@@ -92,6 +92,8 @@ function sanitizeTarget(value: unknown): KioskTarget | null {
     url: target.url,
     durationSeconds: target.durationSeconds,
     enabled: target.enabled,
+    fullScreen: target.fullScreen === true ? true : undefined,
+    borderless: typeof target.borderless === "boolean" ? target.borderless : undefined,
     provider,
     trmnl: provider === "trmnl" ? sanitizeTrmnlConfig(target.trmnl) : undefined,
   };

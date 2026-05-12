@@ -134,7 +134,7 @@ async function buildTrmnlRuntimeUrl(state: TrmnlRuntimeState): Promise<string> {
     jsUrl: assets.jsUrl,
     markup: renderedMarkup,
     refreshMs,
-    borderless: target.borderless ?? false,
+    borderless: target.borderless ?? true,
     darkMode: trmnl.darkMode ?? false,
   });
 
@@ -376,7 +376,10 @@ function buildLiquidScope(
     ...sourceMap,
     extension: {
       label: target.name,
-      css_classes: ["screen", target.trmnl?.noScreenPadding ? "screen--no-padding" : undefined].filter(Boolean).join(" "),
+      css_classes: [
+        "screen",
+        target.trmnl?.noScreenPadding || (target.borderless ?? true) ? "screen--no-bleed" : undefined,
+      ].filter(Boolean).join(" "),
       data: objectData,
       fields,
       values: fieldValues,
@@ -431,11 +434,37 @@ function buildRuntimeDocument(input: {
   borderless: boolean;
   darkMode: boolean;
 }): string {
+  const bodyStyle = input.borderless
+    ? `
+      body.environment.trmnl {
+        display: block;
+      }`
+    : `
+      body.environment.trmnl {
+        display: grid;
+        place-items: center;
+      }`;
+
   const stageStyle = input.borderless
     ? `
       .matterkiosk-trmnl-stage {
         width: 100vw;
         height: 100vh;
+      }
+
+      .trmnl .screen {
+        width: 100% !important;
+        height: 100% !important;
+        padding: 0 !important;
+        margin-right: 0 !important;
+        margin-bottom: 0 !important;
+        transform: none !important;
+      }
+
+      .trmnl .screen .view.view--full,
+      .trmnl .screen .view.view--full .layout {
+        width: 100% !important;
+        height: 100% !important;
       }`
     : `
       .matterkiosk-trmnl-stage {
@@ -468,10 +497,7 @@ function buildRuntimeDocument(input: {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      body.environment.trmnl {
-        display: grid;
-        place-items: center;
-      }
+      ${bodyStyle}
 
       ${stageStyle}
     </style>

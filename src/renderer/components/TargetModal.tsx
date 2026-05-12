@@ -368,7 +368,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
                 <input
                   id="borderless"
                   type="checkbox"
-                  checked={target.borderless ?? false}
+                  checked={target.borderless ?? true}
                   onChange={(e) => update("borderless", e.target.checked)}
                 />
                 <span className="toggle-slider" />
