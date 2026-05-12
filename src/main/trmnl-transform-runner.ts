@@ -44,7 +44,10 @@ function normalizeSource(source) {
   return String(source)
     .replace(/export\s+default\s+async\s+function\s+run/g, "async function run")
     .replace(/export\s+async\s+function\s+run/g, "async function run")
-    .replace(/export\s+function\s+run/g, "function run");
+    .replace(/export\s+function\s+run/g, "function run")
+    .replace(/export\s+default\s+async\s+function\s+transform/g, "async function transform")
+    .replace(/export\s+async\s+function\s+transform/g, "async function transform")
+    .replace(/export\s+function\s+transform/g, "function transform");
 }
 
 self.importScripts = undefined;
@@ -97,8 +100,8 @@ self.onmessage = async (event) => {
       'let module = { exports: {} };',
       'let exports = module.exports;',
       source,
-      'const __candidate = typeof run === "function" ? run : (typeof module.exports === "function" ? module.exports : (module.exports && typeof module.exports.run === "function" ? module.exports.run : (exports && typeof exports.run === "function" ? exports.run : null)));',
-      'if (typeof __candidate !== "function") { throw new Error("transform.js must define an async run(input) function."); }',
+      'const __candidate = typeof run === "function" ? run : (typeof transform === "function" ? transform : (typeof module.exports === "function" ? module.exports : (module.exports && typeof module.exports.run === "function" ? module.exports.run : (module.exports && typeof module.exports.transform === "function" ? module.exports.transform : (exports && typeof exports.run === "function" ? exports.run : (exports && typeof exports.transform === "function" ? exports.transform : null))))));',
+      'if (typeof __candidate !== "function") { throw new Error("transform.js must define a run(input) or transform(input) function."); }',
       'return await __candidate(__input);',
     ].join("\n");
 
@@ -147,7 +150,10 @@ const RUNNER_BOOTSTRAP_SCRIPT = [
   "  return String(source)",
   "    .replace(/export\\s+default\\s+async\\s+function\\s+run/g, \"async function run\")",
   "    .replace(/export\\s+async\\s+function\\s+run/g, \"async function run\")",
-  "    .replace(/export\\s+function\\s+run/g, \"function run\");",
+  "    .replace(/export\\s+function\\s+run/g, \"function run\")",
+  "    .replace(/export\\s+default\\s+async\\s+function\\s+transform/g, \"async function transform\")",
+  "    .replace(/export\\s+async\\s+function\\s+transform/g, \"async function transform\")",
+  "    .replace(/export\\s+function\\s+transform/g, \"function transform\");",
   "}",
   "function decodeUtf8Base64(value) {",
   "  const binary = atob(value);",

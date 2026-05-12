@@ -451,8 +451,24 @@ function buildTemplate(archive: ArchiveFiles): string {
   }
 
   const shared = archive["shared"]?.trim();
-  const wrapped = DEFAULT_LAYOUT.replace("%CONTENT%", full);
-  return transformTemplateKeys([shared, wrapped].filter(Boolean).join("\n\n"));
+  const wrapped = DEFAULT_LAYOUT.replace("%CONTENT%", expandArchiveTemplate(full, archive));
+  return transformTemplateKeys([shared ? expandArchiveTemplate(shared, archive) : undefined, wrapped].filter(Boolean).join("\n\n"));
+}
+
+function expandArchiveTemplate(content: string, archive: ArchiveFiles, stack: string[] = []): string {
+  return content.replace(/\{%\s*template\s+([a-z0-9_-]+)\s*%\}/gi, (_match, templateName: string) => {
+    const key = templateName.toLowerCase();
+    const template = archive[key]?.trim();
+    if (!template) {
+      throw new Error(`The recipe archive references a missing template: ${templateName}.liquid`);
+    }
+
+    if (stack.includes(key)) {
+      throw new Error(`The recipe archive contains a recursive template include: ${[...stack, key].join(" -> ")}`);
+    }
+
+    return expandArchiveTemplate(template, archive, [...stack, key]);
+  });
 }
 
 function transformTemplateKeys(content: string): string {
