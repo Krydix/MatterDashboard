@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
+  AppTargetConfig,
   AppConfig,
   DashboardProvider,
   KioskTarget,
@@ -95,12 +96,48 @@ function sanitizeTarget(value: unknown): KioskTarget | null {
     fullScreen: target.fullScreen === true ? true : undefined,
     borderless: typeof target.borderless === "boolean" ? target.borderless : undefined,
     provider,
+    app: provider === "app" ? sanitizeAppConfig(target.app) : undefined,
     trmnl: provider === "trmnl" ? sanitizeTrmnlConfig(target.trmnl) : undefined,
   };
 }
 
 function sanitizeProvider(provider: DashboardProvider | undefined): DashboardProvider {
-  return provider === "trmnl" ? "trmnl" : "url";
+  if (provider === "trmnl" || provider === "app") {
+    return provider;
+  }
+
+  return "url";
+}
+
+function sanitizeAppConfig(value: Partial<AppTargetConfig> | undefined): AppTargetConfig {
+  if (!value || typeof value !== "object") {
+    return {
+      arguments: [],
+    };
+  }
+
+  return {
+    applicationName:
+      typeof value.applicationName === "string" && value.applicationName.trim().length > 0
+        ? value.applicationName.trim()
+        : undefined,
+    bundleId:
+      typeof value.bundleId === "string" && value.bundleId.trim().length > 0
+        ? value.bundleId.trim()
+        : undefined,
+    applicationPath:
+      typeof value.applicationPath === "string" && value.applicationPath.trim().length > 0
+        ? value.applicationPath.trim()
+        : undefined,
+    arguments: Array.isArray(value.arguments)
+      ? value.arguments
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      : [],
+    noTimeout: value.noTimeout === true ? true : undefined,
+    closeOnDeactivate: value.closeOnDeactivate === true ? true : undefined,
+  };
 }
 
 function sanitizeTrmnlConfig(value: Partial<TrmnlDashboardConfig> | undefined): TrmnlDashboardConfig {

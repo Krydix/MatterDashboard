@@ -76,6 +76,11 @@
   color: var(--control);
 }
 
+.provider-app {
+  border-color: #7cc08a;
+  color: #7cc08a;
+}
+
 .trigger-badge {
   color: var(--control);
   font-weight: 600;

@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { BrowserWindow, ipcMain, session } from "electron";
+import { BrowserWindow, dialog, ipcMain, session } from "electron";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
 import { activateKioskTarget } from "./dashboard-runtime";
 import { importTrmnlRecipe } from "./trmnl-import";
 import { getConfig, saveConfig } from "./store";
-import { openKioskWindow, showSettingsWindow } from "./windows";
+import { openExternalAppSession, openKioskWindow, showSettingsWindow } from "./windows";
 import { AppConfig, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
@@ -108,13 +108,27 @@ export function registerIpcHandlers(): void {
     const target = config.targets.find((t) => t.id === targetId);
     if (target) {
       const activeTarget = await activateKioskTarget(target);
-      await openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
-        restorePreviousApp: true,
-        fullScreen: target.fullScreen ?? true,
-        onClosed: () => {
-          void activeTarget.deactivate();
-        },
-      }).closed;
+      if (activeTarget.presentation === "external-app") {
+        const appDurationMs =
+          target.provider === "app" && (target.app?.noTimeout ?? false)
+            ? Infinity
+            : target.durationSeconds * 1000;
+        const session = await openExternalAppSession(activeTarget.launch, appDurationMs, {
+          restorePreviousApp: true,
+          onClosed: () => {
+            void activeTarget.deactivate();
+          },
+        });
+        await session.closed;
+      } else {
+        await openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
+          restorePreviousApp: true,
+          fullScreen: target.fullScreen ?? true,
+          onClosed: () => {
+            void activeTarget.deactivate();
+          },
+        }).closed;
+      }
     }
   });
 
@@ -167,5 +181,45 @@ export function registerIpcHandlers(): void {
 
       void win.loadURL("https://trmnl.com/recipes");
     });
+  });
+
+  // Open a native macOS file picker filtered to .app bundles.
+  // Reads the app's Info.plist to resolve name and bundle identifier automatically.
+  ipcMain.handle("pick-app", async () => {
+    if (process.platform !== "darwin") {
+      return null;
+    }
+
+    const result = await dialog.showOpenDialog({
+      title: "Select Application",
+      defaultPath: "/Applications",
+      buttonLabel: "Select",
+      properties: ["openFile"],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null;
+    }
+
+    const applicationPath = result.filePaths[0];
+    let applicationName: string | null = null;
+    let bundleId: string | null = null;
+
+    try {
+      const plistPath = `${applicationPath}/Contents/Info.plist`;
+      const { stdout } = await execFileAsync("/usr/bin/plutil", ["-convert", "json", "-o", "-", plistPath], {
+        timeout: 3000,
+      });
+      const info = JSON.parse(stdout) as Record<string, unknown>;
+      applicationName =
+        (info["CFBundleDisplayName"] as string | undefined)?.trim() ||
+        (info["CFBundleName"] as string | undefined)?.trim() ||
+        null;
+      bundleId = (info["CFBundleIdentifier"] as string | undefined)?.trim() || null;
+    } catch {
+      // Plist read failed — still return the path; the user can fill in fields manually.
+    }
+
+    return { applicationPath, applicationName, bundleId };
   });
 }

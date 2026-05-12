@@ -254,6 +254,61 @@ export function openKioskWindow(
   return { close, closed };
 }
 
+export async function openExternalAppSession(
+  launch: () => Promise<void>,
+  durationMs: number,
+  options: KioskWindowOptions = {},
+): Promise<KioskWindowHandle> {
+  const restoreTargetPromise = options.restorePreviousApp
+    ? getMacApplicationRestoreTarget(options.useStartupRestoreTargetFallback ?? false)
+    : Promise.resolve(null);
+  const powerAssertion = acquireKioskPowerAssertion();
+
+  try {
+    await launch();
+  } catch (error) {
+    powerAssertion.release();
+    throw error;
+  }
+
+  let timer: NodeJS.Timeout | undefined;
+  let settled = false;
+  let resolveClosed: (() => void) | undefined;
+
+  const finish = () => {
+    if (settled) {
+      return;
+    }
+
+    settled = true;
+    if (timer) {
+      clearTimeout(timer);
+    }
+    powerAssertion.release();
+
+    void restoreTargetPromise
+      .then((target) => restoreMacApplication(target))
+      .finally(() => {
+        options.onClosed?.();
+        resolveClosed?.();
+      });
+  };
+
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+    // When durationMs is not finite (e.g. Infinity for no-timeout app targets),
+    // skip the auto-close timer — the session runs until explicitly closed.
+    if (Number.isFinite(durationMs)) {
+      timer = setTimeout(finish, durationMs);
+    }
+  });
+
+  return {
+    close: finish,
+    closed,
+  };
+}
+
 export function destroySettingsWindow(): void {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.removeAllListeners("close");

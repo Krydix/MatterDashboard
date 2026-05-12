@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  AppTargetConfig,
   DashboardProvider,
   KioskTarget,
   TrmnlCustomField,
@@ -51,6 +52,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
   const [importing, setImporting] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [importError, setImportError] = useState("");
+  const [pickingApp, setPickingApp] = useState(false);
 
   function update<K extends keyof KioskTarget>(key: K, value: KioskTarget[K]) {
     setTarget((prev) => ({ ...prev, [key]: value }));
@@ -61,9 +63,43 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
     setTarget((prev) => ({
       ...prev,
       provider,
+      app: provider === "app" ? ensureAppConfig(prev.app) : prev.app,
       trmnl: provider === "trmnl" ? ensureTrmnlConfig(prev.trmnl) : prev.trmnl,
     }));
     setErrors({});
+  }
+
+  async function handlePickApp() {
+    setPickingApp(true);
+    try {
+      const picked = await window.matterkiosk.pickApp();
+      if (!picked) return;
+      const guessedName = picked.applicationName ?? picked.applicationPath.split("/").pop()?.replace(/\.app$/i, "") ?? "";
+      setTarget((prev) => ({
+        ...prev,
+        name: prev.name.trim() ? prev.name : guessedName,
+        app: {
+          ...ensureAppConfig(prev.app),
+          applicationName: picked.applicationName ?? undefined,
+          bundleId: picked.bundleId ?? undefined,
+          applicationPath: picked.applicationPath,
+        },
+      }));
+      setErrors({});
+    } finally {
+      setPickingApp(false);
+    }
+  }
+
+  function updateApp<K extends keyof AppTargetConfig>(key: K, value: AppTargetConfig[K]) {
+    setTarget((prev) => ({
+      ...prev,
+      app: {
+        ...ensureAppConfig(prev.app),
+        [key]: value,
+      },
+    }));
+    setErrors((prev) => ({ ...prev, app: "" }));
   }
 
   function updateTrmnl<K extends keyof TrmnlDashboardConfig>(
@@ -93,7 +129,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
           newErrors["url"] = "Enter a valid URL (e.g. https://example.com)";
         }
       }
-    } else {
+    } else if (target.provider === "trmnl") {
       const trmnl = ensureTrmnlConfig(target.trmnl);
       if (!trmnl.importSource) {
         newErrors["recipe"] = "Import a TRMNL recipe to continue";
@@ -114,8 +150,14 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
           }
         }
       }
+    } else {
+      const appConfig = ensureAppConfig(target.app);
+      if (!appConfig.applicationName && !appConfig.bundleId && !appConfig.applicationPath) {
+        newErrors["app"] = "Provide an app name, bundle identifier, or application path";
+      }
     }
-    if (target.durationSeconds < 1) newErrors["durationSeconds"] = "Must be at least 1 second";
+    const isNoTimeout = target.provider === "app" && ensureAppConfig(target.app).noTimeout;
+    if (!isNoTimeout && target.durationSeconds < 1) newErrors["durationSeconds"] = "Must be at least 1 second";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }
@@ -189,10 +231,13 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
 
     onSave({
       ...target,
-      trmnl: target.provider === "trmnl" ? ensureTrmnlConfig(target.trmnl) : target.trmnl,
+      url: target.provider === "url" ? target.url.trim() : "",
+      app: target.provider === "app" ? ensureAppConfig(target.app) : undefined,
+      trmnl: target.provider === "trmnl" ? ensureTrmnlConfig(target.trmnl) : undefined,
     });
   }
 
+  const appConfig = ensureAppConfig(target.app);
   const trmnl = ensureTrmnlConfig(target.trmnl);
   const customFields = parseCustomFields(trmnl.fields);
   const isRecipeMode = !!trmnl.importSource && customFields.some((f) => f.field_type !== "author_bio");
@@ -206,14 +251,14 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-        <h2 className="modal-title">{initial.name ? "Edit Dashboard" : "Add Dashboard"}</h2>
+        <h2 className="modal-title">{initial.name ? "Edit Target" : "Add Target"}</h2>
         <form onSubmit={handleSubmit} className="modal-form">
           <div className="field">
             <label htmlFor="name">Name</label>
             <input
               id="name"
               type="text"
-              placeholder="e.g. Weather, Grafana, Home Assistant"
+              placeholder="e.g. Weather, Grafana, Kodi"
               value={target.name}
               onChange={(e) => update("name", e.target.value)}
               autoFocus
@@ -229,6 +274,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
               onChange={(e) => updateProvider(e.target.value as DashboardProvider)}
             >
               <option value="url">Web URL</option>
+              <option value="app">Native App</option>
               <option value="trmnl">Native TRMNL Runtime</option>
             </select>
           </div>
@@ -245,7 +291,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
               />
               {errors["url"] && <span className="field-error">{errors["url"]}</span>}
             </div>
-          ) : (
+          ) : target.provider === "trmnl" ? (
             <>
               <div className="field recipe-import-field">
                 <div className="import-row">
@@ -330,8 +376,166 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
                 </div>
               )}
             </>
+          ) : (
+            <>
+              {/* Picker button + picked-app card */}
+              <div className="app-pick-row">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handlePickApp}
+                  disabled={pickingApp}
+                >
+                  {pickingApp ? "Picking…" : "Browse Apps…"}
+                </button>
+                {!appConfig.applicationPath && !appConfig.applicationName && !appConfig.bundleId && (
+                  <span className="app-pick-hint">or fill in the fields below manually</span>
+                )}
+              </div>
+
+              {(appConfig.applicationPath || appConfig.applicationName || appConfig.bundleId) && (
+                <div className="app-picked-card">
+                  <div className="app-picked-title">
+                    {appConfig.applicationName ?? appConfig.applicationPath?.split("/").pop()?.replace(/\.app$/i, "") ?? "App"}
+                  </div>
+                  {appConfig.bundleId && (
+                    <div className="app-picked-meta">{appConfig.bundleId}</div>
+                  )}
+                  {appConfig.applicationPath && (
+                    <div className="app-picked-meta app-picked-path">{appConfig.applicationPath}</div>
+                  )}
+                  <button
+                    type="button"
+                    className="app-picked-clear"
+                    title="Clear"
+                    onClick={() => {
+                      setTarget((prev) => ({ ...prev, app: { arguments: prev.app?.arguments ?? [] } }));
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {errors["app"] && <span className="field-error">{errors["app"]}</span>}
+
+              {/* Manual override fields */}
+              <details className="app-manual-details">
+                <summary>Manual override</summary>
+                <div className="app-manual-fields">
+                  <div className="field">
+                    <label htmlFor="app-name">Application Name</label>
+                    <input
+                      id="app-name"
+                      type="text"
+                      placeholder="Kodi"
+                      value={appConfig.applicationName ?? ""}
+                      onChange={(e) => updateApp("applicationName", e.target.value || undefined as unknown as string)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="app-bundle-id">Bundle Identifier</label>
+                    <input
+                      id="app-bundle-id"
+                      type="text"
+                      placeholder="tv.kodi.Kodi"
+                      value={appConfig.bundleId ?? ""}
+                      onChange={(e) => updateApp("bundleId", e.target.value || undefined as unknown as string)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="app-path">Application Path</label>
+                    <input
+                      id="app-path"
+                      type="text"
+                      placeholder="/Applications/Kodi.app"
+                      value={appConfig.applicationPath ?? ""}
+                      onChange={(e) => updateApp("applicationPath", e.target.value || undefined as unknown as string)}
+                    />
+                  </div>
+                </div>
+              </details>
+
+              {/* Launch arguments */}
+              <div className="field">
+                <div className="app-args-header">
+                  <label htmlFor="app-arguments">Launch Arguments</label>
+                  <div className="app-args-presets">
+                    <span className="app-args-preset-label">Presets:</span>
+                    <button
+                      type="button"
+                      className="app-preset-chip"
+                      onClick={() => updateApp("arguments", ["-bigpicture"])}
+                    >
+                      Steam Big Picture
+                    </button>
+                    <button
+                      type="button"
+                      className="app-preset-chip"
+                      onClick={() => updateApp("arguments", ["--fullscreen"])}
+                    >
+                      Fullscreen
+                    </button>
+                    <button
+                      type="button"
+                      className="app-preset-chip"
+                      title="Clear all arguments"
+                      onClick={() => updateApp("arguments", [])}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  id="app-arguments"
+                  className="code-area"
+                  rows={3}
+                  placeholder="One argument per line, e.g.\n-bigpicture"
+                  value={(appConfig.arguments ?? []).join("\n")}
+                  onChange={(e) => updateApp("arguments", parseLaunchArguments(e.target.value))}
+                />
+                <span className="field-help">
+                  These are passed directly to the app after launch.
+                  {(appConfig.arguments ?? []).length > 0 && (
+                    <> Current: <code>{(appConfig.arguments ?? []).join(" ")}</code></>
+                  )}
+                </span>
+              </div>
+
+              {/* App session behaviour */}
+              <div className="field field-row">
+                <label className="toggle" htmlFor="app-no-timeout">
+                  <input
+                    id="app-no-timeout"
+                    type="checkbox"
+                    checked={appConfig.noTimeout ?? false}
+                    onChange={(e) => updateApp("noTimeout", e.target.checked || undefined as unknown as boolean)}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+                <span style={{ marginLeft: 10, color: "var(--text-muted)" }}>
+                  Run indefinitely — don’t auto-close after a timeout
+                </span>
+              </div>
+
+              <div className="field field-row">
+                <label className="toggle" htmlFor="app-close-on-deactivate">
+                  <input
+                    id="app-close-on-deactivate"
+                    type="checkbox"
+                    checked={appConfig.closeOnDeactivate ?? false}
+                    onChange={(e) => updateApp("closeOnDeactivate", e.target.checked || undefined as unknown as boolean)}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+                <span style={{ marginLeft: 10, color: "var(--text-muted)" }}>
+                  Quit app when Matter target is turned off
+                </span>
+              </div>
+            </>
           )}
 
+          {!(target.provider === "app" && appConfig.noTimeout) && (
           <div className="field">
             <label htmlFor="duration">Display Duration (seconds)</label>
             <input
@@ -346,6 +550,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
               <span className="field-error">{errors["durationSeconds"]}</span>
             )}
           </div>
+          )}
 
           <div className="field field-row">
             <label className="toggle" htmlFor="enabled">
@@ -407,6 +612,24 @@ function ensureTrmnlConfig(config: KioskTarget["trmnl"]): TrmnlDashboardConfig {
     darkMode: config?.darkMode,
     noScreenPadding: config?.noScreenPadding,
   };
+}
+
+function ensureAppConfig(config: KioskTarget["app"]): AppTargetConfig {
+  return {
+    applicationName: config?.applicationName,
+    bundleId: config?.bundleId,
+    applicationPath: config?.applicationPath,
+    arguments: config?.arguments ?? [],
+    noTimeout: config?.noTimeout,
+    closeOnDeactivate: config?.closeOnDeactivate,
+  };
+}
+
+function parseLaunchArguments(value: string): string[] {
+  return value
+    .split(/\r?\n/u)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 function parseCustomFields(fieldsJson: string | undefined): TrmnlCustomField[] {

@@ -1,16 +1,37 @@
+import { execFile } from "node:child_process";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { XMLParser } from "fast-xml-parser";
 import { Liquid } from "liquidjs";
-import { KioskTarget, TrmnlAssetMode, TrmnlDashboardConfig, TrmnlPollExchange } from "../shared/types";
+import {
+  AppTargetConfig,
+  KioskTarget,
+  TrmnlAssetMode,
+  TrmnlDashboardConfig,
+  TrmnlPollExchange,
+} from "../shared/types";
 import { getRuntimeDir } from "./app-paths";
 import { TrmnlTransformRunnerHandle, createTrmnlTransformRunner } from "./trmnl-transform-runner";
 
 const DEFAULT_TRMNL_CSS_URL = "https://trmnl.com/css/latest/plugins.css";
 const DEFAULT_TRMNL_JS_URL = "https://trmnl.com/js/latest/plugins.js";
 const FRAMEWORK_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
+const execFileAsync = promisify(execFile);
+
+export type ActivatedKioskTarget =
+  | {
+      presentation: "window";
+      url: string;
+      deactivate: () => Promise<void>;
+    }
+  | {
+      presentation: "external-app";
+      launch: () => Promise<void>;
+      deactivate: () => Promise<void>;
+    };
 
 interface TrmnlRuntimeState {
   target: KioskTarget;
@@ -49,9 +70,25 @@ export async function resolveKioskTargetUrl(target: KioskTarget): Promise<string
   return await buildTransientTrmnlRuntimeUrl(target);
 }
 
-export async function activateKioskTarget(target: KioskTarget): Promise<{ url: string; deactivate: () => Promise<void> }> {
+export async function activateKioskTarget(target: KioskTarget): Promise<ActivatedKioskTarget> {
+  if (target.provider === "app") {
+    const closeOnDeactivate = target.app?.closeOnDeactivate ?? false;
+    return {
+      presentation: "external-app",
+      launch: async () => {
+        await launchAppTarget(target);
+      },
+      deactivate: async () => {
+        if (closeOnDeactivate) {
+          await terminateAppTarget(target);
+        }
+      },
+    };
+  }
+
   if (target.provider !== "trmnl") {
     return {
+      presentation: "window",
       url: target.url,
       deactivate: async () => {},
     };
@@ -64,6 +101,7 @@ export async function activateKioskTarget(target: KioskTarget): Promise<{ url: s
 
   const url = await renderTrmnlRuntime(state);
   return {
+    presentation: "window",
     url,
     deactivate: async () => {
       await deactivateKioskTarget(target.id);
@@ -88,6 +126,88 @@ export async function deactivateKioskTarget(targetId: string): Promise<void> {
     state.transformRunner = undefined;
   }
   runtimeStates.delete(targetId);
+}
+
+async function launchAppTarget(target: KioskTarget): Promise<void> {
+  if (process.platform !== "darwin") {
+    throw new Error("App targets are currently supported on macOS only.");
+  }
+
+  const appConfig = target.app;
+  if (!appConfig) {
+    throw new Error(`Target "${target.name}" is missing app launch settings.`);
+  }
+
+  await execFileAsync("/usr/bin/open", buildMacOpenArguments(appConfig), {
+    timeout: 15000,
+  });
+}
+
+async function terminateAppTarget(target: KioskTarget): Promise<void> {
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  const appConfig = target.app;
+  if (!appConfig) {
+    return;
+  }
+
+  // Prefer bundle ID for an exact match, fall back to display name / path-derived name.
+  const bundleId = appConfig.bundleId?.trim();
+  const name =
+    appConfig.applicationName?.trim() ??
+    appConfig.applicationPath?.split("/").pop()?.replace(/\.app$/iu, "")?.trim();
+
+  if (bundleId) {
+    try {
+      await execFileAsync(
+        "osascript",
+        ["-e", `tell application id "${bundleId}" to quit`],
+        { timeout: 5000 },
+      );
+      return;
+    } catch {
+      // Fall through to name-based quit.
+    }
+  }
+
+  if (name) {
+    try {
+      await execFileAsync(
+        "osascript",
+        ["-e", `tell application "${name}" to quit`],
+        { timeout: 5000 },
+      );
+    } catch {
+      // Best-effort only — the user can close the app manually.
+    }
+  }
+}
+
+function buildMacOpenArguments(appConfig: AppTargetConfig): string[] {
+  const bundleId = appConfig.bundleId?.trim();
+  const applicationPath = appConfig.applicationPath?.trim();
+  const applicationName = appConfig.applicationName?.trim();
+  const argumentsList = appConfig.arguments?.filter((entry) => entry.trim().length > 0) ?? [];
+
+  if (bundleId) {
+    return argumentsList.length > 0 ? ["-b", bundleId, "--args", ...argumentsList] : ["-b", bundleId];
+  }
+
+  if (applicationPath) {
+    return argumentsList.length > 0
+      ? [applicationPath, "--args", ...argumentsList]
+      : [applicationPath];
+  }
+
+  if (applicationName) {
+    return argumentsList.length > 0
+      ? ["-a", applicationName, "--args", ...argumentsList]
+      : ["-a", applicationName];
+  }
+
+  throw new Error("App targets need an app name, bundle identifier, or application path.");
 }
 
 async function renderTrmnlRuntime(state: TrmnlRuntimeState): Promise<string> {

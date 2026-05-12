@@ -50,7 +50,7 @@ export default function TargetsPage(): React.ReactElement {
 
   async function handleDelete(id: string) {
     if (!config) return;
-    if (!confirm("Delete this dashboard?")) return;
+    if (!confirm("Delete this target?")) return;
     await save({ ...config, targets: config.targets.filter((t) => t.id !== id) });
   }
 
@@ -72,14 +72,18 @@ export default function TargetsPage(): React.ReactElement {
     <div>
       <div className="targets-header">
         <div>
-          <h1 className="page-title">Dashboards</h1>
+          <h1 className="page-title">Targets</h1>
           <p className="page-subtitle">
-            Each enabled dashboard becomes a Matter outlet in your smart home app.
+            Each enabled target becomes a Matter outlet. Web dashboards open in MatterKiosk,
+            native apps launch directly.
           </p>
         </div>
         <div className="targets-actions">
           <button className="secondary" onClick={() => openAdd("trmnl")}>
             Import TRMNL Recipe
+          </button>
+          <button className="secondary" onClick={() => openAdd("app")}>
+            Add App
           </button>
           <button className="primary" onClick={() => openAdd("url")}>
             + Add Dashboard
@@ -89,10 +93,10 @@ export default function TargetsPage(): React.ReactElement {
 
       {config.targets.length === 0 && (
         <div className="card empty-state">
-          <p>No dashboards configured yet.</p>
+          <p>No targets configured yet.</p>
           <p className="text-muted" style={{ marginTop: 8 }}>
-            Add a dashboard URL or build a native TRMNL-style template and it will appear as a
-            Matter outlet in your controller.
+            Add a dashboard URL, import a TRMNL recipe, or launch a native app like Kodi or
+            Steam Big Picture from the orchestrator.
           </p>
         </div>
       )}
@@ -158,6 +162,18 @@ export default function TargetsPage(): React.ReactElement {
 }
 
 function describeTarget(target: KioskTarget): string {
+  if (target.provider === "app") {
+    const app = target.app;
+    const label = app?.applicationName
+      ?? app?.applicationPath?.split("/").pop()?.replace(/\.app$/iu, "")
+      ?? "Native app launch";
+    const tags: string[] = [];
+    if (app?.arguments?.length) tags.push(`${app.arguments.length} arg${app.arguments.length === 1 ? "" : "s"}`);
+    if (app?.noTimeout) tags.push("no timeout");
+    if (app?.closeOnDeactivate) tags.push("auto-quit");
+    return tags.length ? `${label} (${tags.join(" · ")})` : label;
+  }
+
   if (target.provider === "trmnl") {
     const recipeId = target.trmnl?.importSource?.recipeId;
     if (recipeId) {
@@ -184,5 +200,13 @@ function describeTarget(target: KioskTarget): string {
 }
 
 function providerLabel(target: KioskTarget): string {
-  return target.provider === "trmnl" ? "TRMNL" : "URL";
+  if (target.provider === "trmnl") {
+    return "TRMNL";
+  }
+
+  if (target.provider === "app") {
+    return "App";
+  }
+
+  return "URL";
 }
