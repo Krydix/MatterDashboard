@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AppConfig, DaemonState, ImportedTrmnlTarget, MatterStatus, VolumeControlAvailability } from "../shared/types";
+import { AppConfig, AppPickResult, DaemonState, ImportedTrmnlTarget, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 // Expose a typed API to the renderer through contextBridge.
 // The renderer has NO access to Node.js — only the methods defined here.
@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld("matterkiosk", {
   openKiosk: (targetId: string): Promise<void> => ipcRenderer.invoke("open-kiosk", targetId),
 
   browseRecipes: (): Promise<string | null> => ipcRenderer.invoke("browse-trmnl-recipes"),
+
+  pickApp: (): Promise<AppPickResult | null> => ipcRenderer.invoke("pick-app"),
 
   onTargetTriggered: (callback: (targetId: string) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, targetId: string) => callback(targetId);

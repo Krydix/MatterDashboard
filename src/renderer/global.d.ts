@@ -1,4 +1,4 @@
-import { AppConfig, DaemonState, ImportedTrmnlTarget, MatterStatus, VolumeControlAvailability } from "../shared/types";
+import { AppConfig, AppPickResult, DaemonState, ImportedTrmnlTarget, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 interface MatterKioskAPI {
   platform: string;
@@ -12,6 +12,7 @@ interface MatterKioskAPI {
   setLaunchAtLogin(enabled: boolean): Promise<void>;
   openKiosk(targetId: string): Promise<void>;
   browseRecipes(): Promise<string | null>;
+  pickApp(): Promise<AppPickResult | null>;
   onTargetTriggered(callback: (targetId: string) => void): () => void;
 }
 

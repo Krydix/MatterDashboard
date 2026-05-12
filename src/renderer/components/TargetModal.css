@@ -177,3 +177,136 @@
   flex-shrink: 0;
   cursor: pointer;
 }
+
+/* ── App picker UI ── */
+
+.app-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.app-pick-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.app-picked-card {
+  position: relative;
+  background: var(--surface-raised, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 36px 10px 12px;
+}
+
+.app-picked-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.app-picked-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.app-picked-path {
+  font-family: "SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.app-picked-clear {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  line-height: 1;
+  border-radius: 4px;
+}
+
+.app-picked-clear:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.app-manual-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.app-manual-details summary {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-manual-details summary::before {
+  content: "▶";
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+.app-manual-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.app-manual-fields {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.app-args-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+
+.app-args-header label {
+  margin: 0;
+}
+
+.app-args-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.app-args-preset-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.app-preset-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised, rgba(255, 255, 255, 0.04));
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.app-preset-chip:hover {
+  border-color: var(--control);
+  color: var(--control);
+}

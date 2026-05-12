@@ -1,4 +1,17 @@
-export type DashboardProvider = "url" | "trmnl";
+export type DashboardProvider = "url" | "trmnl" | "app";
+
+export interface AppPickResult {
+  applicationPath: string;
+  applicationName: string | null;
+  bundleId: string | null;
+}
+
+export interface AppTargetConfig {
+  applicationName?: string;
+  bundleId?: string;
+  applicationPath?: string;
+  arguments?: string[];
+}
 
 export type TrmnlAssetMode = "cached" | "remote";
 
@@ -97,6 +110,7 @@ export interface KioskTarget {
   fullScreen?: boolean;
   borderless?: boolean;
   provider: DashboardProvider;
+  app?: AppTargetConfig;
   trmnl?: TrmnlDashboardConfig;
 }
 
@@ -167,4 +181,5 @@ export type IpcChannels = {
   "reset-matter": () => void;
   "set-launch-at-login": (enabled: boolean) => void;
   "target-triggered": (targetId: string) => void;
+  "pick-app": () => AppPickResult | null;
 };

@@ -3,7 +3,13 @@ import { activateKioskTarget } from "./dashboard-runtime";
 import { reconcileDaemon } from "./daemon-manager";
 import { getDashboardTargetId } from "./execution-mode";
 import { getConfig } from "./store";
-import { createSettingsWindow, destroySettingsWindow, openKioskWindow, showSettingsWindow } from "./windows";
+import {
+  createSettingsWindow,
+  destroySettingsWindow,
+  openExternalAppSession,
+  openKioskWindow,
+  showSettingsWindow,
+} from "./windows";
 import { registerIpcHandlers } from "./ipc";
 
 const dashboardTargetId = getDashboardTargetId(process.argv);
@@ -24,16 +30,32 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    const activeTarget = await activateKioskTarget(target);
-    const kioskWindow = openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
-      restorePreviousApp: true,
-      useStartupRestoreTargetFallback: true,
-      fullScreen: target.fullScreen ?? true,
-      onClosed: () => {
-        void activeTarget.deactivate();
-      },
-    });
-    await kioskWindow.closed;
+    try {
+      const activeTarget = await activateKioskTarget(target);
+      if (activeTarget.presentation === "external-app") {
+        const session = await openExternalAppSession(activeTarget.launch, target.durationSeconds * 1000, {
+          restorePreviousApp: true,
+          useStartupRestoreTargetFallback: true,
+          onClosed: () => {
+            void activeTarget.deactivate();
+          },
+        });
+        await session.closed;
+      } else {
+        const kioskWindow = openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
+          restorePreviousApp: true,
+          useStartupRestoreTargetFallback: true,
+          fullScreen: target.fullScreen ?? true,
+          onClosed: () => {
+            void activeTarget.deactivate();
+          },
+        });
+        await kioskWindow.closed;
+      }
+    } catch (error) {
+      console.error("[Dashboard] Failed to present target:", error);
+    }
+
     app.quit();
     return;
   }
