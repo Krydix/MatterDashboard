@@ -1,9 +1,103 @@
+export type DashboardProvider = "url" | "trmnl";
+
+export type TrmnlAssetMode = "cached" | "remote";
+
+export type TrmnlImportKind = "recipe";
+
+export type TrmnlExchangeFormat = "auto" | "json" | "text" | "xml";
+
+export interface TrmnlTransformConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  timeoutMs: number;
+  script: string;
+}
+
+export interface TrmnlImportedRecipe {
+  kind: TrmnlImportKind;
+  recipeId: string;
+  source: string;
+  archiveUrl?: string;
+  importedAt: string;
+}
+
+export interface TrmnlPollExchange {
+  id: string;
+  label: string;
+  urlTemplate: string;
+  method: string;
+  headers: Record<string, string>;
+  bodyTemplate?: string;
+  format: TrmnlExchangeFormat;
+}
+
+export interface TrmnlPollingConfig {
+  enabled: boolean;
+  intervalSeconds: number;
+  exchanges: TrmnlPollExchange[];
+}
+
+export interface TrmnlCustomFieldOption {
+  label: string;
+  value: string;
+}
+
+export type TrmnlCustomFieldType = "string" | "select" | "multi_string" | "author_bio";
+
+export interface TrmnlCustomField {
+  keyname: string;
+  name: string;
+  field_type: TrmnlCustomFieldType | string;
+  description?: string;
+  help_text?: string;
+  placeholder?: string;
+  options?: TrmnlCustomFieldOption[];
+  default?: string | number | boolean | string[];
+  optional?: boolean;
+  category?: string;
+  group?: string;
+  multiple?: boolean;
+  /** For `text` / `code` fields: textarea row height. */
+  rows?: number;
+  /** For `number` fields. */
+  min?: number;
+  max?: number;
+  step?: number;
+  /** For string / text fields: maximum character length. */
+  maxlength?: number;
+  /** For `copyable` fields: the static value to display. */
+  value?: string;
+}
+
+export interface TrmnlDashboardConfig {
+  template: string;
+  data: string;
+  fields?: string;
+  assetMode?: TrmnlAssetMode;
+  cssUrl?: string;
+  jsUrl?: string;
+  importSource?: TrmnlImportedRecipe;
+  polling?: TrmnlPollingConfig;
+  transform?: TrmnlTransformConfig;
+  darkMode?: boolean;
+  noScreenPadding?: boolean;
+}
+
+export interface ImportedTrmnlTarget {
+  name: string;
+  trmnl: TrmnlDashboardConfig;
+}
+
 export interface KioskTarget {
   id: string;
   name: string;
   url: string;
   durationSeconds: number;
   enabled: boolean;
+  fullScreen?: boolean;
+  borderless?: boolean;
+  provider: DashboardProvider;
+  trmnl?: TrmnlDashboardConfig;
 }
 
 export interface VolumeControlConfig {
@@ -67,6 +161,7 @@ export interface DaemonState {
 export type IpcChannels = {
   "get-config": () => AppConfig;
   "save-config": (config: AppConfig) => void;
+  "import-trmnl-recipe": (source: string) => ImportedTrmnlTarget;
   "get-volume-control-availability": () => VolumeControlAvailability;
   "get-matter-status": () => MatterStatus;
   "reset-matter": () => void;
