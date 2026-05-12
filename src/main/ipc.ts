@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ipcMain } from "electron";
+import { BrowserWindow, ipcMain, session } from "electron";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
 import { activateKioskTarget } from "./dashboard-runtime";
 import { importTrmnlRecipe } from "./trmnl-import";
@@ -110,6 +110,7 @@ export function registerIpcHandlers(): void {
       const activeTarget = await activateKioskTarget(target);
       await openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
         restorePreviousApp: true,
+        fullScreen: target.fullScreen ?? true,
         onClosed: () => {
           void activeTarget.deactivate();
         },
@@ -120,5 +121,51 @@ export function registerIpcHandlers(): void {
   // Show settings window from renderer request
   ipcMain.on("show-settings", () => {
     showSettingsWindow();
+  });
+
+  // Open the TRMNL recipe browser. Resolves with the selected recipe URL,
+  // or null if the user closed the window without picking anything.
+  ipcMain.handle("browse-trmnl-recipes", (_event) => {
+    return new Promise<string | null>((resolve) => {
+      const RECIPE_URL_PATTERN = /\/recipes\/(\d+)(?:\/|$|\?|#)/;
+
+      const win = new BrowserWindow({
+        width: 1024,
+        height: 768,
+        title: "Browse TRMNL Recipes",
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          // Use a separate session so TRMNL cookies don't mix with app state
+          session: session.fromPartition("persist:trmnl-browser"),
+        },
+      });
+
+      let resolved = false;
+
+      function tryResolveUrl(url: string) {
+        if (resolved) return;
+        const match = url.match(RECIPE_URL_PATTERN);
+        if (match) {
+          resolved = true;
+          resolve(url);
+          win.close();
+        }
+      }
+
+      win.webContents.on("will-navigate", (_e, url) => tryResolveUrl(url));
+      win.webContents.on("did-navigate", (_e, url) => tryResolveUrl(url));
+      win.webContents.on("did-navigate-in-page", (_e, url) => tryResolveUrl(url));
+
+      win.on("closed", () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+      });
+
+      void win.loadURL("https://trmnl.com/recipes");
+    });
   });
 }

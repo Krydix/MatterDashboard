@@ -1,7 +1,14 @@
 import path from "node:path";
 import JSZip from "jszip";
 import { load as loadYaml } from "js-yaml";
-import { ImportedTrmnlTarget, TrmnlDashboardConfig, TrmnlPollExchange, TrmnlTransformConfig } from "../shared/types";
+import {
+  ImportedTrmnlTarget,
+  TrmnlCustomField,
+  TrmnlCustomFieldOption,
+  TrmnlDashboardConfig,
+  TrmnlPollExchange,
+  TrmnlTransformConfig,
+} from "../shared/types";
 
 const RECIPE_PATH_PATTERN = /\/recipes\/(?<id>\d+)(?:\/|$)/;
 const ARCHIVE_PATH_PATTERN = /\/api\/plugin_settings\/(?<id>\d+)\/archive(?:\/|$)/;
@@ -25,7 +32,7 @@ export async function importTrmnlRecipe(source: string): Promise<ImportedTrmnlTa
   const { archive, archiveUrl } = await downloadRecipeArchive(parsed);
   const settings = parseRecipeSettings(archive);
 
-  const fields = Array.isArray(settings["custom_fields"]) ? settings["custom_fields"] : [];
+  const fields = normalizeCustomFields(Array.isArray(settings["custom_fields"]) ? settings["custom_fields"] : []);
   const data = buildImportedData(fields, settings["static_data"]);
   const transform = buildTransformConfig(archive, settings);
   const polling = transform ? undefined : buildPollingConfig(settings, fields, data);
@@ -44,6 +51,8 @@ export async function importTrmnlRecipe(source: string): Promise<ImportedTrmnlTa
     },
     polling,
     transform,
+    darkMode: settings["dark_mode"] === "yes" ? true : undefined,
+    noScreenPadding: settings["no_screen_padding"] === "yes" ? true : undefined,
   };
 
   return {
@@ -183,7 +192,7 @@ function buildTransformConfig(
   };
 }
 
-function buildImportedData(fields: unknown[], rawStaticData: unknown): Record<string, unknown> {
+function buildImportedData(fields: TrmnlCustomField[], rawStaticData: unknown): Record<string, unknown> {
   const staticData = isRecord(rawStaticData) ? { ...rawStaticData } : {};
   const defaults = buildFieldDefaults(fields);
   const explicitValues = isRecord(staticData["values"]) ? staticData["values"] : {};
@@ -199,20 +208,15 @@ function buildImportedData(fields: unknown[], rawStaticData: unknown): Record<st
   return staticData;
 }
 
-function buildFieldDefaults(fields: unknown[]): Record<string, unknown> {
+function buildFieldDefaults(fields: TrmnlCustomField[]): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
 
   for (const field of fields) {
-    if (!isRecord(field)) {
+    if (!("default" in field) || field.default === undefined) {
       continue;
     }
 
-    const keyname = readNonEmptyString(field["keyname"]);
-    if (!keyname || !("default" in field)) {
-      continue;
-    }
-
-    defaults[keyname] = field["default"];
+    defaults[field.keyname] = field.default;
   }
 
   return defaults;
@@ -220,7 +224,7 @@ function buildFieldDefaults(fields: unknown[]): Record<string, unknown> {
 
 function buildPollingConfig(
   settings: Record<string, unknown>,
-  fields: unknown[],
+  fields: TrmnlCustomField[],
   data: Record<string, unknown>,
 ): TrmnlDashboardConfig["polling"] {
   const strategy = readNonEmptyString(settings["strategy"]);
@@ -321,6 +325,125 @@ function coerceBodyTemplate(value: unknown): string | undefined {
   return undefined;
 }
 
+function normalizeCustomFields(fields: unknown[]): TrmnlCustomField[] {
+  return fields
+    .map((field) => normalizeCustomField(field))
+    .filter((field): field is TrmnlCustomField => field !== null);
+}
+
+function normalizeCustomField(value: unknown): TrmnlCustomField | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const keyname = readNonEmptyString(value["keyname"]);
+  const name = readNonEmptyString(value["name"]);
+  const fieldType = readNonEmptyString(value["field_type"]);
+  if (!keyname || !name || !fieldType) {
+    return null;
+  }
+
+  const options = normalizeCustomFieldOptions(value["options"]);
+  const normalized: TrmnlCustomField = {
+    keyname,
+    name,
+    field_type: fieldType,
+    description: readNonEmptyString(value["description"]),
+    help_text: readNonEmptyString(value["help_text"]),
+    placeholder: readNonEmptyString(value["placeholder"]),
+    default: normalizeCustomFieldDefault(value["default"], value["multiple"] === true),
+    optional: value["optional"] === true,
+    category: readNonEmptyString(value["category"]),
+    group: readNonEmptyString(value["group"]),
+    multiple: value["multiple"] === true,
+  };
+
+  if (options.length > 0) {
+    normalized.options = options;
+  }
+
+  const fieldValue = readNonEmptyString(value["value"]);
+  if (fieldValue !== undefined) normalized.value = fieldValue;
+
+  const rows = readPositiveInt(value["rows"]);
+  if (rows !== undefined) normalized.rows = rows;
+
+  const min = readFiniteNumber(value["min"]);
+  if (min !== undefined) normalized.min = min;
+
+  const max = readFiniteNumber(value["max"]);
+  if (max !== undefined) normalized.max = max;
+
+  const step = readFiniteNumber(value["step"]);
+  if (step !== undefined) normalized.step = step;
+
+  const maxlength = readPositiveInt(value["maxlength"]);
+  if (maxlength !== undefined) normalized.maxlength = maxlength;
+
+  return normalized;
+}
+
+function normalizeCustomFieldOptions(value: unknown): TrmnlCustomFieldOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => normalizeCustomFieldOption(entry))
+    .filter((entry): entry is TrmnlCustomFieldOption => entry !== null);
+}
+
+function normalizeCustomFieldOption(value: unknown): TrmnlCustomFieldOption | null {
+  if (typeof value === "string") {
+    return {
+      label: value,
+      value: parameterizeOptionValue(value),
+    };
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return {
+      label: String(value),
+      value: String(value),
+    };
+  }
+
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const entries = Object.entries(value);
+  if (entries.length !== 1) {
+    return null;
+  }
+
+  const [label, optionValue] = entries[0];
+  return {
+    label,
+    value: String(optionValue),
+  };
+}
+
+function normalizeCustomFieldDefault(value: unknown, isMultiple: boolean): TrmnlCustomField["default"] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry));
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return isMultiple ? [String(value)] : value;
+  }
+
+  return undefined;
+}
+
+function parameterizeOptionValue(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || value.trim();
+}
+
 function buildTemplate(archive: ArchiveFiles): string {
   const full = archive["full"]?.trim();
   if (!full) {
@@ -348,6 +471,15 @@ function readInteger(value: unknown): number | undefined {
 
 function readNonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readPositiveInt(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.round(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

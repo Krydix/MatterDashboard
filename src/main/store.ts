@@ -120,6 +120,8 @@ function sanitizeTrmnlConfig(value: Partial<TrmnlDashboardConfig> | undefined): 
     importSource: sanitizeImportedRecipe(value.importSource),
     polling: sanitizePollingConfig(value.polling),
     transform: sanitizeTransformConfig(value.transform),
+    darkMode: value.darkMode === true ? true : undefined,
+    noScreenPadding: value.noScreenPadding === true ? true : undefined,
   };
 }
 

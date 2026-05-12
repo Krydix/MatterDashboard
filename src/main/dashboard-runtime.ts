@@ -134,6 +134,8 @@ async function buildTrmnlRuntimeUrl(state: TrmnlRuntimeState): Promise<string> {
     jsUrl: assets.jsUrl,
     markup: renderedMarkup,
     refreshMs,
+    borderless: target.borderless ?? false,
+    darkMode: trmnl.darkMode ?? false,
   });
 
   const runtimeDir = path.join(getRuntimeDir(), "dashboards");
@@ -374,7 +376,7 @@ function buildLiquidScope(
     ...sourceMap,
     extension: {
       label: target.name,
-      css_classes: "screen",
+      css_classes: ["screen", target.trmnl?.noScreenPadding ? "screen--no-padding" : undefined].filter(Boolean).join(" "),
       data: objectData,
       fields,
       values: fieldValues,
@@ -426,7 +428,23 @@ function buildRuntimeDocument(input: {
   jsUrl: string;
   markup: string;
   refreshMs: number;
+  borderless: boolean;
+  darkMode: boolean;
 }): string {
+  const stageStyle = input.borderless
+    ? `
+      .matterkiosk-trmnl-stage {
+        width: 100vw;
+        height: 100vh;
+      }`
+    : `
+      .matterkiosk-trmnl-stage {
+        width: 800px;
+        height: 480px;
+        transform: scale(min(calc(100vw / 800), calc(100vh / 480)));
+        transform-origin: center center;
+      }`;
+
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -437,7 +455,7 @@ function buildRuntimeDocument(input: {
     <script src="${escapeAttribute(input.jsUrl)}"></script>
     <style>
       :root {
-        color-scheme: light;
+        color-scheme: ${input.darkMode ? "dark" : "light"};
       }
 
       html,
@@ -455,16 +473,11 @@ function buildRuntimeDocument(input: {
         place-items: center;
       }
 
-      .matterkiosk-trmnl-stage {
-        width: 800px;
-        height: 480px;
-        transform: scale(min(calc(100vw / 800), calc(100vh / 480)));
-        transform-origin: center center;
-      }
+      ${stageStyle}
     </style>
     ${input.refreshMs > 0 ? `<script>window.setTimeout(() => window.location.reload(), ${input.refreshMs});</script>` : ""}
   </head>
-  <body class="environment trmnl">
+  <body class="environment trmnl${input.darkMode ? " dark" : ""}">
     <div class="matterkiosk-trmnl-stage">${input.markup}</div>
   </body>
 </html>

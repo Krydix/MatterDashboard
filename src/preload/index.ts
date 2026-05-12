@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld("matterkiosk", {
 
   openKiosk: (targetId: string): Promise<void> => ipcRenderer.invoke("open-kiosk", targetId),
 
+  browseRecipes: (): Promise<string | null> => ipcRenderer.invoke("browse-trmnl-recipes"),
+
   onTargetTriggered: (callback: (targetId: string) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, targetId: string) => callback(targetId);
     ipcRenderer.on("target-triggered", handler);

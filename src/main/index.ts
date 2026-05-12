@@ -28,6 +28,7 @@ async function bootstrap(): Promise<void> {
     const kioskWindow = openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
       restorePreviousApp: true,
       useStartupRestoreTargetFallback: true,
+      fullScreen: target.fullScreen ?? true,
       onClosed: () => {
         void activeTarget.deactivate();
       },

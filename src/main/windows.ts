@@ -128,6 +128,7 @@ export interface KioskWindowOptions {
   onClosed?: () => void;
   restorePreviousApp?: boolean;
   useStartupRestoreTargetFallback?: boolean;
+  fullScreen?: boolean;
 }
 
 const RENDERER_URL =
@@ -200,14 +201,16 @@ export function openKioskWindow(
     : Promise.resolve(null);
   const powerAssertion = acquireKioskPowerAssertion();
 
+  const useFullScreen = options.fullScreen ?? true;
+
   const kiosk = new BrowserWindow({
     x: primaryDisplay.bounds.x,
     y: primaryDisplay.bounds.y,
     width,
     height,
     frame: false,
-    fullscreen: true,
-    alwaysOnTop: true,
+    fullscreen: useFullScreen,
+    alwaysOnTop: useFullScreen,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

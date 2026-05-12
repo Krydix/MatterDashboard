@@ -2,7 +2,8 @@ import React, { useState } from "react";
 import {
   DashboardProvider,
   KioskTarget,
-  TrmnlAssetMode,
+  TrmnlCustomField,
+  TrmnlCustomFieldOption,
   TrmnlDashboardConfig,
 } from "../../shared/types";
 import "./TargetModal.css";
@@ -29,6 +30,14 @@ const DEFAULT_TRMNL_DATA = JSON.stringify(
   2,
 );
 
+const TIME_ZONES: string[] = (() => {
+  try {
+    return Intl.supportedValuesOf("timeZone");
+  } catch {
+    return [];
+  }
+})();
+
 interface Props {
   initial: KioskTarget;
   onSave: (target: KioskTarget) => void;
@@ -40,6 +49,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [recipeSource, setRecipeSource] = useState(initial.trmnl?.importSource?.source ?? "");
   const [importing, setImporting] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [importError, setImportError] = useState("");
 
   function update<K extends keyof KioskTarget>(key: K, value: KioskTarget[K]) {
@@ -85,24 +95,23 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
       }
     } else {
       const trmnl = ensureTrmnlConfig(target.trmnl);
-      if (!trmnl.template.trim()) {
-        newErrors["template"] = "TRMNL template is required";
-      }
-
-      try {
-        JSON.parse(trmnl.data);
-      } catch {
-        newErrors["data"] = "TRMNL data must be valid JSON";
-      }
-
-      if (trmnl.fields?.trim()) {
-        try {
-          const parsedFields = JSON.parse(trmnl.fields);
-          if (!Array.isArray(parsedFields)) {
-            newErrors["fields"] = "TRMNL fields must be a JSON array";
+      if (!trmnl.importSource) {
+        newErrors["recipe"] = "Import a TRMNL recipe to continue";
+      } else {
+        const customFields = parseCustomFields(trmnl.fields);
+        const fieldValues = parseDataValues(trmnl.data);
+        for (const field of customFields) {
+          if (
+            field.field_type === "author_bio" ||
+            field.field_type === "boolean" ||
+            field.field_type === "copyable" ||
+            field.field_type === "copyable_webhook_url" ||
+            field.field_type === "plugin_instance_select" ||
+            field.optional
+          ) continue;
+          if (!hasFieldValue(fieldValues[field.keyname], field.multiple)) {
+            newErrors[`rf-${field.keyname}`] = `${field.name} is required`;
           }
-        } catch {
-          newErrors["fields"] = "TRMNL fields must be valid JSON";
         }
       }
     }
@@ -132,11 +141,43 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
         },
       }));
       setRecipeSource(imported.trmnl.importSource?.source ?? source);
-      setErrors((prev) => ({ ...prev, template: "", data: "", fields: "" }));
+      setErrors({});
     } catch (error) {
       setImportError(error instanceof Error ? error.message : String(error));
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function handleBrowseRecipes() {
+    setBrowsing(true);
+    setImportError("");
+    try {
+      const url = await window.matterkiosk.browseRecipes();
+      if (!url) return; // user closed the browser without picking
+      setRecipeSource(url);
+      // Auto-import immediately
+      setImporting(true);
+      try {
+        const imported = await window.matterkiosk.importTrmnlRecipe(url);
+        setTarget((prev) => ({
+          ...prev,
+          name: imported.name,
+          provider: "trmnl",
+          trmnl: {
+            ...ensureTrmnlConfig(prev.trmnl),
+            ...imported.trmnl,
+          },
+        }));
+        setRecipeSource(imported.trmnl.importSource?.source ?? url);
+        setErrors({});
+      } catch (error) {
+        setImportError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setImporting(false);
+      }
+    } finally {
+      setBrowsing(false);
     }
   }
 
@@ -153,6 +194,14 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
   }
 
   const trmnl = ensureTrmnlConfig(target.trmnl);
+  const customFields = parseCustomFields(trmnl.fields);
+  const isRecipeMode = !!trmnl.importSource && customFields.some((f) => f.field_type !== "author_bio");
+  const fieldValues = parseDataValues(trmnl.data);
+
+  function handleFieldChange(keyname: string, value: string | string[] | boolean) {
+    updateTrmnl("data", setDataValue(trmnl.data, keyname, value));
+    setErrors((prev) => ({ ...prev, [`rf-${keyname}`]: "" }));
+  }
 
   return (
     <div className="modal-overlay" onClick={onCancel}>
@@ -198,89 +247,88 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
             </div>
           ) : (
             <>
-              <div className="field import-block">
-                <label htmlFor="recipe-source">Import TRMNL Recipe</label>
+              <div className="field recipe-import-field">
                 <div className="import-row">
                   <input
                     id="recipe-source"
                     type="text"
-                    placeholder="Recipe URL, recipe ID, or archive URL"
+                    placeholder="Recipe URL or ID, e.g. trmnl.com/recipes/123456"
                     value={recipeSource}
                     onChange={(e) => setRecipeSource(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleImportRecipe(); } }}
                   />
                   <button
                     type="button"
                     className="secondary import-button"
                     onClick={handleImportRecipe}
-                    disabled={importing}
+                    disabled={importing || browsing}
                   >
-                    {importing ? "Importing…" : "Import"}
+                    {importing ? "Importing…" : trmnl.importSource ? "Re-import" : "Import"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary import-button"
+                    onClick={handleBrowseRecipes}
+                    disabled={importing || browsing}
+                    title="Browse the TRMNL recipe gallery"
+                  >
+                    {browsing ? "Browsing…" : "Browse"}
                   </button>
                 </div>
-                <span className="field-help">
-                  Accepts recipe pages like https://trmnl.com/recipes/123456, a raw recipe ID,
-                  or a plugin archive URL.
-                </span>
                 {importError && <span className="field-error">{importError}</span>}
+                {errors["recipe"] && <span className="field-error">{errors["recipe"]}</span>}
                 {trmnl.importSource && (
                   <span className="field-help">
-                    Imported recipe #{trmnl.importSource.recipeId} on{" "}
-                    {new Date(trmnl.importSource.importedAt).toLocaleString()}.
-                  </span>
-                )}
-                {trmnl.polling?.enabled && (
-                  <span className="field-help">
-                    Polls {trmnl.polling.exchanges.length} source
-                    {trmnl.polling.exchanges.length === 1 ? "" : "s"} every{" "}
-                    {trmnl.polling.intervalSeconds}s and rewrites the local runtime automatically.
-                  </span>
-                )}
-                {trmnl.transform?.enabled && (
-                  <span className="field-help">
-                    Runs the imported transform in an on-demand sandbox every {trmnl.transform.intervalSeconds}s
-                    while the dashboard is active. Timeout: {Math.round(trmnl.transform.timeoutMs / 1000)}s.
+                    Recipe #{trmnl.importSource.recipeId}
+                    {trmnl.polling?.enabled && ` · polls every ${trmnl.polling.intervalSeconds}s`}
+                    {trmnl.transform?.enabled && ` · transform every ${trmnl.transform.intervalSeconds}s`}
                   </span>
                 )}
               </div>
 
-              <div className="field">
-                <label htmlFor="asset-mode">Framework Assets</label>
-                <select
-                  id="asset-mode"
-                  value={trmnl.assetMode ?? "cached"}
-                  onChange={(e) => updateTrmnl("assetMode", e.target.value as TrmnlAssetMode)}
-                >
-                  <option value="cached">Local cached assets</option>
-                  <option value="remote">Remote trmnl.com assets</option>
-                </select>
-                <span className="field-help">
-                  Cached assets are downloaded once and then loaded locally by MatterKiosk.
-                </span>
-              </div>
-
-              <div className="field">
-                <label htmlFor="template">TRMNL Template</label>
-                <textarea
-                  id="template"
-                  className="code-area"
-                  rows={12}
-                  value={trmnl.template}
-                  onChange={(e) => updateTrmnl("template", e.target.value)}
-                />
-                {errors["template"] && <span className="field-error">{errors["template"]}</span>}
-              </div>
-
-              <div className="field">
-                <label htmlFor="data">TRMNL Data (JSON)</label>
-                <textarea
-                  id="data"
-                  className="code-area"
-                  rows={10}
-                  value={trmnl.data}
-                  onChange={(e) => updateTrmnl("data", e.target.value)}
-                />
-                {errors["data"] && <span className="field-error">{errors["data"]}</span>}
-              </div>
+              {isRecipeMode && (
+                <div className="recipe-config">
+                  {customFields.map((field) => {
+                    if (field.field_type === "author_bio") {
+                      return (
+                        <div key={field.keyname} className="recipe-bio">
+                          {field.description ?? field.name}
+                        </div>
+                      );
+                    }
+                    const value = fieldValues[field.keyname] ?? field.default ?? (field.multiple ? [] : "");
+                    const errorKey = `rf-${field.keyname}`;
+                    return (
+                      <div key={field.keyname} className="field">
+                        <label htmlFor={`rf-${field.keyname}`}>
+                          {field.name}
+                          {field.optional && (
+                            <span className="field-optional"> (optional)</span>
+                          )}
+                        </label>
+                    {renderFieldInput(
+                      field,
+                      value,
+                      `rf-${field.keyname}`,
+                      (v) => handleFieldChange(field.keyname, v),
+                    )}
+                        {field.description && (
+                          <span className="field-help">{field.description}</span>
+                        )}
+                        {field.help_text && (
+                          <span className="field-help" dangerouslySetInnerHTML={{ __html: field.help_text }} />
+                        )}
+                        {field.field_type === "multi_string" && (
+                          <span className="field-help">Separate multiple values with commas.</span>
+                        )}
+                        {errors[errorKey] && (
+                          <span className="field-error">{errors[errorKey]}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
 
@@ -314,6 +362,23 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
             </span>
           </div>
 
+          {target.provider === "trmnl" && (
+            <div className="field field-row">
+              <label className="toggle" htmlFor="borderless">
+                <input
+                  id="borderless"
+                  type="checkbox"
+                  checked={target.borderless ?? false}
+                  onChange={(e) => update("borderless", e.target.checked)}
+                />
+                <span className="toggle-slider" />
+              </label>
+              <span style={{ marginLeft: 10, color: "var(--text-muted)" }}>
+                Fill screen (stretch to full window, no letterbox border)
+              </span>
+            </div>
+          )}
+
           <div className="modal-actions">
             <button type="button" className="secondary" onClick={onCancel}>
               Cancel
@@ -339,5 +404,400 @@ function ensureTrmnlConfig(config: KioskTarget["trmnl"]): TrmnlDashboardConfig {
     importSource: config?.importSource,
     polling: config?.polling,
     transform: config?.transform,
+    darkMode: config?.darkMode,
+    noScreenPadding: config?.noScreenPadding,
   };
+}
+
+function parseCustomFields(fieldsJson: string | undefined): TrmnlCustomField[] {
+  if (!fieldsJson) return [];
+  try {
+    const parsed = JSON.parse(fieldsJson);
+    return Array.isArray(parsed)
+      ? parsed
+          .map((field) => normalizeCustomField(field))
+          .filter((field): field is TrmnlCustomField => field !== null)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseDataValues(dataJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(dataJson) as Record<string, unknown>;
+    const values = parsed?.["values"];
+    if (values && typeof values === "object" && !Array.isArray(values)) {
+      return values as Record<string, unknown>;
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+  return {};
+}
+
+function setDataValue(dataJson: string, key: string, value: string | string[] | boolean): string {
+  try {
+    const parsed = JSON.parse(dataJson) as Record<string, unknown>;
+    const values = (parsed["values"] ?? {}) as Record<string, unknown>;
+    values[key] = value;
+    parsed["values"] = values;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return dataJson;
+  }
+}
+
+function hasFieldValue(value: unknown, isMultiple = false): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => String(entry).trim().length > 0);
+  }
+
+  if (isMultiple && typeof value === "string") {
+    return value.split(",").some((entry) => entry.trim().length > 0);
+  }
+
+  return String(value ?? "").trim().length > 0;
+}
+
+function coerceSingleValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? String(value[0]) : "";
+  }
+
+  return String(value ?? "");
+}
+
+function coerceMultiSelectValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry));
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  }
+
+  return [];
+}
+
+function readSelectedValues(select: HTMLSelectElement): string[] {
+  return Array.from(select.selectedOptions).map((option) => option.value);
+}
+
+function normalizeCustomField(value: unknown): TrmnlCustomField | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const raw = value as Record<string, unknown>;
+  const keyname = readNonEmptyString(raw["keyname"]);
+  const name = readNonEmptyString(raw["name"]);
+  const fieldType = readNonEmptyString(raw["field_type"]);
+  if (!keyname || !name || !fieldType) {
+    return null;
+  }
+
+  const normalized: TrmnlCustomField = {
+    keyname,
+    name,
+    field_type: fieldType,
+    description: readNonEmptyString(raw["description"]),
+    help_text: readNonEmptyString(raw["help_text"]),
+    placeholder: readNonEmptyString(raw["placeholder"]),
+    default: normalizeFieldDefault(raw["default"], raw["multiple"] === true),
+    optional: raw["optional"] === true,
+    category: readNonEmptyString(raw["category"]),
+    group: readNonEmptyString(raw["group"]),
+    multiple: raw["multiple"] === true,
+    rows: typeof raw["rows"] === "number" && raw["rows"] > 0 ? Math.round(raw["rows"]) : undefined,
+    min: typeof raw["min"] === "number" && Number.isFinite(raw["min"]) ? raw["min"] : undefined,
+    max: typeof raw["max"] === "number" && Number.isFinite(raw["max"]) ? raw["max"] : undefined,
+    step: typeof raw["step"] === "number" && Number.isFinite(raw["step"]) ? raw["step"] : undefined,
+    maxlength: typeof raw["maxlength"] === "number" && raw["maxlength"] > 0 ? Math.round(raw["maxlength"]) : undefined,
+    value: readNonEmptyString(raw["value"]),
+  };
+
+  const options = normalizeCustomFieldOptions(raw["options"]);
+  if (options.length > 0) {
+    normalized.options = options;
+  }
+
+  return normalized;
+}
+
+function normalizeCustomFieldOptions(value: unknown): TrmnlCustomFieldOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((entry) => normalizeCustomFieldOption(entry))
+    .filter((entry): entry is TrmnlCustomFieldOption => entry !== null);
+}
+
+function normalizeCustomFieldOption(value: unknown): TrmnlCustomFieldOption | null {
+  if (typeof value === "string") {
+    return {
+      label: value,
+      value: parameterizeOptionValue(value),
+    };
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return {
+      label: String(value),
+      value: String(value),
+    };
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const obj = value as Record<string, unknown>;
+
+  // Already-normalized { label, value } object (stored from a previous import)
+  if (typeof obj["label"] === "string" && typeof obj["value"] === "string") {
+    return { label: obj["label"], value: obj["value"] };
+  }
+
+  // TRMNL raw format: single-entry { "Label": "value" } object
+  const entries = Object.entries(obj);
+  if (entries.length !== 1) {
+    return null;
+  }
+
+  const [label, optionValue] = entries[0];
+  return {
+    label,
+    value: String(optionValue),
+  };
+}
+
+function normalizeFieldDefault(value: unknown, isMultiple: boolean): TrmnlCustomField["default"] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry));
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return isMultiple ? [String(value)] : value;
+  }
+
+  return undefined;
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parameterizeOptionValue(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || value.trim();
+}
+
+function renderFieldInput(
+  field: TrmnlCustomField,
+  value: unknown,
+  id: string,
+  onChange: (v: string | string[] | boolean) => void,
+): React.ReactNode {
+  const ft = field.field_type;
+
+  // select / xhrSelect with pre-loaded options
+  if ((ft === "select" || ft === "xhrSelect" || ft === "xhrSelectSearch") && field.options && field.options.length > 0) {
+    if (field.multiple) {
+      // Checkbox list for multi-select
+      const selected = coerceMultiSelectValue(value);
+      return (
+        <div className="field-checkbox-list" role="group" aria-labelledby={id}>
+          {field.options.map((opt) => {
+            const checked = selected.includes(opt.value);
+            const inputId = `${id}-${opt.value}`;
+            return (
+              <label key={opt.value} className="field-checkbox-item">
+                <input
+                  type="checkbox"
+                  id={inputId}
+                  value={opt.value}
+                  checked={checked}
+                  onChange={() => {
+                    const next = checked
+                      ? selected.filter((v) => v !== opt.value)
+                      : [...selected, opt.value];
+                    onChange(next);
+                  }}
+                />
+                {opt.label}
+              </label>
+            );
+          })}
+        </div>
+      );
+    }
+
+    return (
+      <select
+        id={id}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {field.options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  // boolean — checkbox
+  if (ft === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        id={id}
+        className="field-checkbox"
+        checked={value === true || String(value) === "true"}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    );
+  }
+
+  // textarea types
+  if (ft === "text" || ft === "code") {
+    return (
+      <textarea
+        id={id}
+        className={ft === "code" ? "field-code" : undefined}
+        rows={field.rows ?? 3}
+        placeholder={field.placeholder ?? ""}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // number
+  if (ft === "number") {
+    return (
+      <input
+        type="number"
+        id={id}
+        placeholder={field.placeholder ?? ""}
+        value={coerceSingleValue(value)}
+        min={field.min}
+        max={field.max}
+        step={field.step}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // password
+  if (ft === "password") {
+    return (
+      <input
+        type="password"
+        id={id}
+        placeholder={field.placeholder ?? ""}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // url
+  if (ft === "url") {
+    return (
+      <input
+        type="url"
+        id={id}
+        placeholder={field.placeholder ?? "https://"}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // date
+  if (ft === "date") {
+    return (
+      <input
+        type="date"
+        id={id}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // time
+  if (ft === "time") {
+    return (
+      <input
+        type="time"
+        id={id}
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // time_zone — select populated from Intl (or text fallback)
+  if (ft === "time_zone") {
+    if (TIME_ZONES.length > 0) {
+      return (
+        <select
+          id={id}
+          value={coerceSingleValue(value)}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          <option value="">— Select timezone —</option>
+          {TIME_ZONES.map((tz) => (
+            <option key={tz} value={tz}>
+              {tz}
+            </option>
+          ))}
+        </select>
+      );
+    }
+    return (
+      <input
+        type="text"
+        id={id}
+        placeholder="e.g. America/New_York"
+        value={coerceSingleValue(value)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  // copyable / copyable_webhook_url — read-only display
+  if (ft === "copyable" || ft === "copyable_webhook_url") {
+    const displayValue = ft === "copyable" ? (field.value ?? "") : "(generated by TRMNL)";
+    return (
+      <input
+        type="text"
+        id={id}
+        readOnly
+        value={displayValue}
+        className="field-readonly"
+      />
+    );
+  }
+
+  // default: plain text (string, multi_string, xhrSelect/Search without options, etc.)
+  return (
+    <input
+      type="text"
+      id={id}
+      placeholder={field.placeholder ?? ""}
+      maxLength={field.maxlength}
+      value={coerceSingleValue(value)}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
 }

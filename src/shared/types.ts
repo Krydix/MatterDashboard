@@ -37,6 +37,38 @@ export interface TrmnlPollingConfig {
   exchanges: TrmnlPollExchange[];
 }
 
+export interface TrmnlCustomFieldOption {
+  label: string;
+  value: string;
+}
+
+export type TrmnlCustomFieldType = "string" | "select" | "multi_string" | "author_bio";
+
+export interface TrmnlCustomField {
+  keyname: string;
+  name: string;
+  field_type: TrmnlCustomFieldType | string;
+  description?: string;
+  help_text?: string;
+  placeholder?: string;
+  options?: TrmnlCustomFieldOption[];
+  default?: string | number | boolean | string[];
+  optional?: boolean;
+  category?: string;
+  group?: string;
+  multiple?: boolean;
+  /** For `text` / `code` fields: textarea row height. */
+  rows?: number;
+  /** For `number` fields. */
+  min?: number;
+  max?: number;
+  step?: number;
+  /** For string / text fields: maximum character length. */
+  maxlength?: number;
+  /** For `copyable` fields: the static value to display. */
+  value?: string;
+}
+
 export interface TrmnlDashboardConfig {
   template: string;
   data: string;
@@ -47,6 +79,8 @@ export interface TrmnlDashboardConfig {
   importSource?: TrmnlImportedRecipe;
   polling?: TrmnlPollingConfig;
   transform?: TrmnlTransformConfig;
+  darkMode?: boolean;
+  noScreenPadding?: boolean;
 }
 
 export interface ImportedTrmnlTarget {
@@ -60,6 +94,8 @@ export interface KioskTarget {
   url: string;
   durationSeconds: number;
   enabled: boolean;
+  fullScreen?: boolean;
+  borderless?: boolean;
   provider: DashboardProvider;
   trmnl?: TrmnlDashboardConfig;
 }

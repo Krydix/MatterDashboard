@@ -11,6 +11,7 @@ interface MatterKioskAPI {
   resetMatter(): Promise<void>;
   setLaunchAtLogin(enabled: boolean): Promise<void>;
   openKiosk(targetId: string): Promise<void>;
+  browseRecipes(): Promise<string | null>;
   onTargetTriggered(callback: (targetId: string) => void): () => void;
 }
 
