@@ -109,7 +109,11 @@ export function registerIpcHandlers(): void {
     if (target) {
       const activeTarget = await activateKioskTarget(target);
       if (activeTarget.presentation === "external-app") {
-        const session = await openExternalAppSession(activeTarget.launch, target.durationSeconds * 1000, {
+        const appDurationMs =
+          target.provider === "app" && (target.app?.noTimeout ?? false)
+            ? Infinity
+            : target.durationSeconds * 1000;
+        const session = await openExternalAppSession(activeTarget.launch, appDurationMs, {
           restorePreviousApp: true,
           onClosed: () => {
             void activeTarget.deactivate();

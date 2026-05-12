@@ -72,12 +72,17 @@ export async function resolveKioskTargetUrl(target: KioskTarget): Promise<string
 
 export async function activateKioskTarget(target: KioskTarget): Promise<ActivatedKioskTarget> {
   if (target.provider === "app") {
+    const closeOnDeactivate = target.app?.closeOnDeactivate ?? false;
     return {
       presentation: "external-app",
       launch: async () => {
         await launchAppTarget(target);
       },
-      deactivate: async () => {},
+      deactivate: async () => {
+        if (closeOnDeactivate) {
+          await terminateAppTarget(target);
+        }
+      },
     };
   }
 
@@ -136,6 +141,48 @@ async function launchAppTarget(target: KioskTarget): Promise<void> {
   await execFileAsync("/usr/bin/open", buildMacOpenArguments(appConfig), {
     timeout: 15000,
   });
+}
+
+async function terminateAppTarget(target: KioskTarget): Promise<void> {
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  const appConfig = target.app;
+  if (!appConfig) {
+    return;
+  }
+
+  // Prefer bundle ID for an exact match, fall back to display name / path-derived name.
+  const bundleId = appConfig.bundleId?.trim();
+  const name =
+    appConfig.applicationName?.trim() ??
+    appConfig.applicationPath?.split("/").pop()?.replace(/\.app$/iu, "")?.trim();
+
+  if (bundleId) {
+    try {
+      await execFileAsync(
+        "osascript",
+        ["-e", `tell application id "${bundleId}" to quit`],
+        { timeout: 5000 },
+      );
+      return;
+    } catch {
+      // Fall through to name-based quit.
+    }
+  }
+
+  if (name) {
+    try {
+      await execFileAsync(
+        "osascript",
+        ["-e", `tell application "${name}" to quit`],
+        { timeout: 5000 },
+      );
+    } catch {
+      // Best-effort only — the user can close the app manually.
+    }
+  }
 }
 
 function buildMacOpenArguments(appConfig: AppTargetConfig): string[] {

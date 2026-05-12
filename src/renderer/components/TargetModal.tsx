@@ -156,7 +156,8 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
         newErrors["app"] = "Provide an app name, bundle identifier, or application path";
       }
     }
-    if (target.durationSeconds < 1) newErrors["durationSeconds"] = "Must be at least 1 second";
+    const isNoTimeout = target.provider === "app" && ensureAppConfig(target.app).noTimeout;
+    if (!isNoTimeout && target.durationSeconds < 1) newErrors["durationSeconds"] = "Must be at least 1 second";
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }
@@ -500,9 +501,41 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
                   )}
                 </span>
               </div>
+
+              {/* App session behaviour */}
+              <div className="field field-row">
+                <label className="toggle" htmlFor="app-no-timeout">
+                  <input
+                    id="app-no-timeout"
+                    type="checkbox"
+                    checked={appConfig.noTimeout ?? false}
+                    onChange={(e) => updateApp("noTimeout", e.target.checked || undefined as unknown as boolean)}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+                <span style={{ marginLeft: 10, color: "var(--text-muted)" }}>
+                  Run indefinitely — don’t auto-close after a timeout
+                </span>
+              </div>
+
+              <div className="field field-row">
+                <label className="toggle" htmlFor="app-close-on-deactivate">
+                  <input
+                    id="app-close-on-deactivate"
+                    type="checkbox"
+                    checked={appConfig.closeOnDeactivate ?? false}
+                    onChange={(e) => updateApp("closeOnDeactivate", e.target.checked || undefined as unknown as boolean)}
+                  />
+                  <span className="toggle-slider" />
+                </label>
+                <span style={{ marginLeft: 10, color: "var(--text-muted)" }}>
+                  Quit app when Matter target is turned off
+                </span>
+              </div>
             </>
           )}
 
+          {!(target.provider === "app" && appConfig.noTimeout) && (
           <div className="field">
             <label htmlFor="duration">Display Duration (seconds)</label>
             <input
@@ -517,6 +550,7 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
               <span className="field-error">{errors["durationSeconds"]}</span>
             )}
           </div>
+          )}
 
           <div className="field field-row">
             <label className="toggle" htmlFor="enabled">
@@ -586,6 +620,8 @@ function ensureAppConfig(config: KioskTarget["app"]): AppTargetConfig {
     bundleId: config?.bundleId,
     applicationPath: config?.applicationPath,
     arguments: config?.arguments ?? [],
+    noTimeout: config?.noTimeout,
+    closeOnDeactivate: config?.closeOnDeactivate,
   };
 }
 

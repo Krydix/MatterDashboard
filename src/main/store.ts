@@ -135,6 +135,8 @@ function sanitizeAppConfig(value: Partial<AppTargetConfig> | undefined): AppTarg
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0)
       : [],
+    noTimeout: value.noTimeout === true ? true : undefined,
+    closeOnDeactivate: value.closeOnDeactivate === true ? true : undefined,
   };
 }
 

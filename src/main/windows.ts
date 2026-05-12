@@ -296,7 +296,11 @@ export async function openExternalAppSession(
 
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
-    timer = setTimeout(finish, durationMs);
+    // When durationMs is not finite (e.g. Infinity for no-timeout app targets),
+    // skip the auto-close timer — the session runs until explicitly closed.
+    if (Number.isFinite(durationMs)) {
+      timer = setTimeout(finish, durationMs);
+    }
   });
 
   return {

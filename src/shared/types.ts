@@ -11,6 +11,10 @@ export interface AppTargetConfig {
   bundleId?: string;
   applicationPath?: string;
   arguments?: string[];
+  /** When true the orchestrator does not auto-close the session after durationSeconds. */
+  noTimeout?: boolean;
+  /** When true the app is gracefully quit when the Matter target is turned off. */
+  closeOnDeactivate?: boolean;
 }
 
 export type TrmnlAssetMode = "cached" | "remote";

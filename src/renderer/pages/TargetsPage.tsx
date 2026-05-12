@@ -164,19 +164,14 @@ export default function TargetsPage(): React.ReactElement {
 function describeTarget(target: KioskTarget): string {
   if (target.provider === "app") {
     const app = target.app;
-    if (app?.applicationName) {
-      return app.arguments?.length ? `${app.applicationName} (${app.arguments.length} arg${app.arguments.length === 1 ? "" : "s"})` : app.applicationName;
-    }
-
-    if (app?.bundleId) {
-      return `Bundle ${app.bundleId}`;
-    }
-
-    if (app?.applicationPath) {
-      return app.applicationPath;
-    }
-
-    return "Native app launch";
+    const label = app?.applicationName
+      ?? app?.applicationPath?.split("/").pop()?.replace(/\.app$/iu, "")
+      ?? "Native app launch";
+    const tags: string[] = [];
+    if (app?.arguments?.length) tags.push(`${app.arguments.length} arg${app.arguments.length === 1 ? "" : "s"}`);
+    if (app?.noTimeout) tags.push("no timeout");
+    if (app?.closeOnDeactivate) tags.push("auto-quit");
+    return tags.length ? `${label} (${tags.join(" · ")})` : label;
   }
 
   if (target.provider === "trmnl") {
