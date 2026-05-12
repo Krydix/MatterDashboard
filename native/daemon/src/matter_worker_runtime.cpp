@@ -122,6 +122,8 @@ struct ChildProcess {
       return "dashboard";
     case MatterAccessoryKind::Volume:
       return "volume";
+    case MatterAccessoryKind::Brightness:
+      return "brightness";
   }
 
   return "dashboard";

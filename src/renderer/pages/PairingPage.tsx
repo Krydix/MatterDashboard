@@ -42,10 +42,6 @@ export default function PairingPage(): React.ReactElement {
 
   return (
     <div>
-      <h1 className="page-title">Pairing</h1>
-      <p className="page-subtitle">
-        Pair MatterKiosk with Apple Home, Google Home, Home Assistant, or any Matter controller.
-      </p>
 
       {loading && !status && <p className="text-muted">Starting Matter bridge…</p>}
 

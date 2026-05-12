@@ -1,4 +1,9 @@
 import { app } from "electron";
+
+// Enable native macOS rubber-band (elastic) overscroll for overflow scroll containers.
+// Must be called before app.ready.
+app.commandLine.appendSwitch("enable-features", "ElasticOverscroll");
+
 import { activateKioskTarget } from "./dashboard-runtime";
 import { reconcileDaemon } from "./daemon-manager";
 import { getDashboardTargetId } from "./execution-mode";
@@ -81,12 +86,18 @@ async function bootstrap(): Promise<void> {
         activeSession = await openExternalAppSession(activeTarget.launch, appDurationMs, {
           restorePreviousApp: true,
           useStartupRestoreTargetFallback: true,
+          targetDisplayId: config.presentationDisplayId,
+          brightnessBridgeEnabled: config.brightnessControl.enabled,
+          brightnessOverridePercent: target.brightnessPercent,
         });
         await activeSession.closed;
       } else {
         activeSession = openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
           restorePreviousApp: true,
           useStartupRestoreTargetFallback: true,
+          targetDisplayId: config.presentationDisplayId,
+          brightnessBridgeEnabled: config.brightnessControl.enabled,
+          brightnessOverridePercent: target.brightnessPercent,
           fullScreen: target.fullScreen ?? true,
         });
         await activeSession.closed;

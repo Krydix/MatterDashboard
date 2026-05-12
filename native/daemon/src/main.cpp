@@ -1,3 +1,4 @@
+#include "brightness_controller.hpp"
 #include "matter_runtime.hpp"
 #include "mini_json.hpp"
 #include "volume_controller.hpp"
@@ -50,6 +51,8 @@ namespace {
 
 struct AppConfig {
   std::vector<KioskTarget> targets;
+  int presentationDisplayId = 0;
+  BrightnessControlConfig brightnessControl;
   VolumeControlConfig volumeControl;
   bool launchAtLogin = false;
   bool backgroundDaemonEnabled = false;
@@ -75,6 +78,8 @@ std::atomic<bool> g_interrupted = false;
 int g_server_fd = -1;
 
 constexpr const char *kVolumeAccessoryId = "system-volume";
+constexpr const char *kBrightnessAccessoryId = "display-brightness";
+constexpr auto kBrightnessStatePollInterval = std::chrono::seconds(2);
 constexpr auto kVolumeStatePollInterval = std::chrono::seconds(2);
 constexpr auto kVolumeOffDebounceWindow = std::chrono::milliseconds(750);
 
@@ -127,6 +132,10 @@ constexpr auto kVolumeOffDebounceWindow = std::chrono::milliseconds(750);
   return lhs.muted == rhs.muted && lhs.level == rhs.level;
 }
 
+[[nodiscard]] bool same_brightness_control_state(const BrightnessControlState &lhs, const BrightnessControlState &rhs) {
+  return lhs.level == rhs.level;
+}
+
 [[nodiscard]] MatterAccessory build_volume_accessory(std::string name, const VolumeControlState &state) {
   return MatterAccessory{
       .id = kVolumeAccessoryId,
@@ -137,6 +146,20 @@ constexpr auto kVolumeOffDebounceWindow = std::chrono::milliseconds(750);
       .durationSeconds = 0,
       .enabled = true,
       .on = !state.muted,
+      .level = percent_to_matter_level(state.level),
+  };
+}
+
+[[nodiscard]] MatterAccessory build_brightness_accessory(std::string name, const BrightnessControlState &state) {
+  return MatterAccessory{
+      .id = kBrightnessAccessoryId,
+      .name = std::move(name),
+      .kind = MatterAccessoryKind::Brightness,
+      .deviceType = MatterAccessoryDeviceType::DimmableLight,
+      .url = {},
+      .durationSeconds = 0,
+      .enabled = true,
+      .on = state.level > 0,
       .level = percent_to_matter_level(state.level),
   };
 }
@@ -226,6 +249,14 @@ void ensure_directory(const fs::path &path) {
 
   config.launchAtLogin = bool_or(value, "launchAtLogin", false);
   config.backgroundDaemonEnabled = bool_or(value, "backgroundDaemonEnabled", config.launchAtLogin);
+  config.presentationDisplayId = int_or(value, "presentationDisplayId", 0);
+
+  if (const JsonValue *brightnessControl = value.find("brightnessControl"); brightnessControl != nullptr && brightnessControl->is_object()) {
+    config.brightnessControl.enabled = bool_or(*brightnessControl, "enabled", false);
+    if (const JsonValue *name = brightnessControl->find("name"); name != nullptr && name->is_string() && !name->as_string().empty()) {
+      config.brightnessControl.name = name->as_string();
+    }
+  }
 
   if (const JsonValue *volumeControl = value.find("volumeControl"); volumeControl != nullptr && volumeControl->is_object()) {
     config.volumeControl.enabled = bool_or(*volumeControl, "enabled", false);
@@ -571,6 +602,7 @@ class NativeDaemon {
  public:
   NativeDaemon()
       : runtime_(create_matter_runtime(matter_storage_path().string())),
+        brightnessController_(create_brightness_controller()),
         volumeController_(create_volume_controller()) {
     runtime_->setAccessoryTurnedOnHandler([this](const std::string &accessoryId) { handle_accessory_turned_on(accessoryId); });
     runtime_->setAccessoryTurnedOffHandler([this](const std::string &accessoryId) { handle_accessory_turned_off(accessoryId); });
@@ -595,10 +627,13 @@ class NativeDaemon {
 
     write_pid_file();
     config_ = load_config_from_disk();
+    refresh_brightness_sync_settings();
     refresh_volume_sync_settings();
+    start_brightness_polling();
     start_volume_polling();
     if (config_.backgroundDaemonEnabled) {
       status_ = runtime_->start(build_accessories());
+      seed_published_brightness_state_from_host();
       seed_published_volume_state_from_host();
     }
 
@@ -696,13 +731,16 @@ class NativeDaemon {
           throw std::runtime_error("sync-config request missing config payload");
         }
         config_ = parse_config(*config);
+        refresh_brightness_sync_settings();
         refresh_volume_sync_settings();
         if (config_.backgroundDaemonEnabled) {
           status_ = runtime_->syncAccessories(build_accessories());
+          seed_published_brightness_state_from_host();
           seed_published_volume_state_from_host();
         } else {
           runtime_->stop();
           status_ = {};
+          clear_published_brightness_state();
           clear_published_volume_state();
         }
         return JsonValue::Object{{"ok", true}};
@@ -726,7 +764,7 @@ class NativeDaemon {
 
   [[nodiscard]] std::vector<MatterAccessory> build_accessories() {
     std::vector<MatterAccessory> accessories;
-    accessories.reserve(config_.targets.size() + 1);
+    accessories.reserve(config_.targets.size() + 2);
 
     for (const auto &target : config_.targets) {
       accessories.push_back(MatterAccessory{
@@ -754,7 +792,136 @@ class NativeDaemon {
       }
     }
 
+    if (config_.brightnessControl.enabled && config_.presentationDisplayId > 0 && brightnessController_ && brightnessController_->isSupported()) {
+      try {
+        const BrightnessControlState state = brightnessController_->getState(config_.presentationDisplayId);
+        if (state.level > 0) {
+          lastKnownBrightnessLevel_.store(state.level);
+        }
+        accessories.push_back(build_brightness_accessory(config_.brightnessControl.name, state));
+      } catch (const std::exception &error) {
+        std::cerr << "Failed to read host brightness state: " << error.what() << "\n";
+      }
+    }
+
     return accessories;
+  }
+
+  void start_brightness_polling() {
+    if (brightnessPollThread_.joinable()) {
+      return;
+    }
+
+    brightnessPollThread_ = std::thread([this]() { poll_brightness_state_loop(); });
+  }
+
+  void refresh_brightness_sync_settings() {
+    backgroundMatterEnabled_.store(config_.backgroundDaemonEnabled);
+
+    const int displayId = config_.presentationDisplayId > 0 ? config_.presentationDisplayId : 0;
+    const bool brightnessEnabled =
+        config_.backgroundDaemonEnabled && config_.brightnessControl.enabled && displayId > 0 && brightnessController_ && brightnessController_->isSupported();
+    brightnessBridgeEnabled_.store(brightnessEnabled);
+    brightnessDisplayId_.store(displayId);
+
+    std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+    brightnessAccessoryName_ = config_.brightnessControl.name;
+    if (!brightnessEnabled) {
+      publishedBrightnessState_.reset();
+    }
+  }
+
+  [[nodiscard]] bool should_poll_brightness() const {
+    return backgroundMatterEnabled_.load() && brightnessBridgeEnabled_.load();
+  }
+
+  void clear_published_brightness_state() {
+    std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+    publishedBrightnessState_.reset();
+  }
+
+  void remember_published_brightness_state(const BrightnessControlState &state) {
+    if (state.level > 0) {
+      lastKnownBrightnessLevel_.store(state.level);
+    }
+
+    std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+    publishedBrightnessState_ = state;
+  }
+
+  [[nodiscard]] BrightnessControlState sanitize_brightness_readback(const BrightnessControlState &state) {
+    if (state.level > 0) {
+      return state;
+    }
+
+    std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+    if (allowZeroBrightnessReadback_) {
+      return state;
+    }
+
+    if (publishedBrightnessState_.has_value() && publishedBrightnessState_->level > 0) {
+      return *publishedBrightnessState_;
+    }
+
+    return state;
+  }
+
+  void seed_published_brightness_state_from_host() {
+    if (!should_poll_brightness()) {
+      clear_published_brightness_state();
+      return;
+    }
+
+    const int displayId = brightnessDisplayId_.load();
+    if (displayId <= 0) {
+      clear_published_brightness_state();
+      return;
+    }
+
+    try {
+      remember_published_brightness_state(sanitize_brightness_readback(brightnessController_->getState(displayId)));
+    } catch (const std::exception &error) {
+      clear_published_brightness_state();
+      std::cerr << "Failed to seed host brightness state tracking: " << error.what() << "\n";
+    }
+  }
+
+  void poll_brightness_state_loop() {
+    while (!shuttingDown_.load() && !g_interrupted.load()) {
+      if (!should_poll_brightness()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        continue;
+      }
+
+      const int displayId = brightnessDisplayId_.load();
+      if (displayId <= 0) {
+        std::this_thread::sleep_for(kBrightnessStatePollInterval);
+        continue;
+      }
+
+      try {
+        const BrightnessControlState state = sanitize_brightness_readback(brightnessController_->getState(displayId));
+
+        std::string accessoryName;
+        bool changed = false;
+        {
+          std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+          accessoryName = brightnessAccessoryName_;
+          changed = !publishedBrightnessState_.has_value() || !same_brightness_control_state(*publishedBrightnessState_, state);
+        }
+
+        if (changed) {
+          runtime_->setAccessoryState(build_brightness_accessory(accessoryName, state));
+          remember_published_brightness_state(state);
+        } else if (state.level > 0) {
+          lastKnownBrightnessLevel_.store(state.level);
+        }
+      } catch (const std::exception &error) {
+        std::cerr << "Failed to poll host brightness state: " << error.what() << "\n";
+      }
+
+      std::this_thread::sleep_for(kBrightnessStatePollInterval);
+    }
   }
 
   void start_volume_polling() {
@@ -843,6 +1010,11 @@ class NativeDaemon {
   }
 
   void handle_accessory_turned_on(const std::string &accessoryId) {
+    if (accessoryId == kBrightnessAccessoryId) {
+      handle_brightness_turned_on();
+      return;
+    }
+
     if (accessoryId == kVolumeAccessoryId) {
       handle_volume_turned_on();
       return;
@@ -897,6 +1069,11 @@ class NativeDaemon {
   }
 
   void handle_accessory_turned_off(const std::string &accessoryId) {
+    if (accessoryId == kBrightnessAccessoryId) {
+      handle_brightness_turned_off();
+      return;
+    }
+
     if (accessoryId == kVolumeAccessoryId) {
       handle_volume_turned_off();
       return;
@@ -912,6 +1089,11 @@ class NativeDaemon {
   }
 
   void handle_accessory_level_changed(const std::string &accessoryId, std::uint8_t level) {
+    if (accessoryId == kBrightnessAccessoryId) {
+      handle_brightness_level_changed(level);
+      return;
+    }
+
     if (accessoryId != kVolumeAccessoryId) {
       return;
     }
@@ -939,6 +1121,85 @@ class NativeDaemon {
       seed_published_volume_state_from_host();
     } catch (const std::exception &error) {
       std::cerr << "Failed to turn host volume on: " << error.what() << "\n";
+    }
+  }
+
+  void handle_brightness_turned_on() {
+    const int displayId = brightnessDisplayId_.load();
+    if (!brightnessController_ || !brightnessController_->isSupported() || displayId <= 0) {
+      return;
+    }
+
+    try {
+      const BrightnessControlState state = brightnessController_->getState(displayId);
+      if (state.level > 0) {
+        lastKnownBrightnessLevel_.store(state.level);
+      }
+
+      if (state.level <= 0) {
+        const int restoredLevel = std::clamp(lastKnownBrightnessLevel_.load(), 1, 100);
+        {
+          std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+          allowZeroBrightnessReadback_ = false;
+        }
+        brightnessController_->setLevel(displayId, restoredLevel);
+        remember_published_brightness_state(BrightnessControlState{.level = restoredLevel});
+        lastKnownBrightnessLevel_.store(restoredLevel);
+      } else {
+        std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+        allowZeroBrightnessReadback_ = false;
+      }
+      seed_published_brightness_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to turn host brightness on: " << error.what() << "\n";
+    }
+  }
+
+  void handle_brightness_turned_off() {
+    const int displayId = brightnessDisplayId_.load();
+    if (!brightnessController_ || !brightnessController_->isSupported() || displayId <= 0) {
+      return;
+    }
+
+    try {
+      const BrightnessControlState state = brightnessController_->getState(displayId);
+      if (state.level > 0) {
+        lastKnownBrightnessLevel_.store(state.level);
+      }
+      {
+        std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+        allowZeroBrightnessReadback_ = true;
+      }
+      brightnessController_->setLevel(displayId, 0);
+      remember_published_brightness_state(BrightnessControlState{.level = 0});
+      seed_published_brightness_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to turn host brightness off: " << error.what() << "\n";
+    }
+  }
+
+  void handle_brightness_level_changed(std::uint8_t level) {
+    const int displayId = brightnessDisplayId_.load();
+    if (!brightnessController_ || !brightnessController_->isSupported() || displayId <= 0) {
+      return;
+    }
+
+    try {
+      const int percent = matter_level_to_percent(level);
+      if (percent > 0) {
+        lastKnownBrightnessLevel_.store(percent);
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(brightnessStateMutex_);
+        allowZeroBrightnessReadback_ = percent <= 0;
+      }
+
+      brightnessController_->setLevel(displayId, percent);
+      remember_published_brightness_state(BrightnessControlState{.level = percent});
+      seed_published_brightness_state_from_host();
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to set host brightness level: " << error.what() << "\n";
     }
   }
 
@@ -1048,6 +1309,10 @@ class NativeDaemon {
   void cleanup() {
     shuttingDown_.store(true);
 
+    if (brightnessPollThread_.joinable()) {
+      brightnessPollThread_.join();
+    }
+
     if (volumePollThread_.joinable()) {
       volumePollThread_.join();
     }
@@ -1081,18 +1346,27 @@ class NativeDaemon {
   AppConfig config_;
   MatterStatus status_;
   std::unique_ptr<MatterRuntime> runtime_;
+  std::unique_ptr<BrightnessController> brightnessController_;
   std::unique_ptr<VolumeController> volumeController_;
   std::atomic<bool> shuttingDown_{false};
   std::atomic<bool> backgroundMatterEnabled_{false};
+  std::atomic<bool> brightnessBridgeEnabled_{false};
   std::atomic<bool> volumeBridgeEnabled_{false};
   std::mutex dashboardMutex_;
+  std::mutex brightnessStateMutex_;
   std::mutex volumeStateMutex_;
   std::map<std::string, ChildProcess> activeDashboards_;
+  std::thread brightnessPollThread_;
   std::thread volumePollThread_;
+  std::optional<BrightnessControlState> publishedBrightnessState_;
   std::optional<VolumeControlState> publishedVolumeState_;
+  bool allowZeroBrightnessReadback_ = true;
+  std::string brightnessAccessoryName_ = "Brightness";
   std::string volumeAccessoryName_ = "Volume";
   std::chrono::steady_clock::time_point ignoreVolumeOffUntil_{};
   int serverFd_ = -1;
+  std::atomic<int> brightnessDisplayId_{0};
+  std::atomic<int> lastKnownBrightnessLevel_{50};
   std::atomic<int> lastKnownVolumeLevel_{50};
 };
 

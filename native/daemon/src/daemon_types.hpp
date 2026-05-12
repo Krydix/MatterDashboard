@@ -15,6 +15,7 @@ struct KioskTarget {
 enum class MatterAccessoryKind {
   Dashboard,
   Volume,
+  Brightness,
 };
 
 enum class MatterAccessoryDeviceType {
@@ -39,8 +40,17 @@ struct VolumeControlConfig {
   std::string name = "Volume";
 };
 
+struct BrightnessControlConfig {
+  bool enabled = false;
+  std::string name = "Brightness";
+};
+
 struct VolumeControlState {
   bool muted = false;
+  int level = 50;
+};
+
+struct BrightnessControlState {
   int level = 50;
 };
 

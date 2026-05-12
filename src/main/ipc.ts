@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { BrowserWindow, dialog, ipcMain, session } from "electron";
+import { getBrightnessControlAvailability } from "./brightness-control";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
 import { activateKioskTarget } from "./dashboard-runtime";
 import { importTrmnlRecipe } from "./trmnl-import";
 import { getConfig, saveConfig } from "./store";
-import { openExternalAppSession, openKioskWindow, showSettingsWindow } from "./windows";
+import { getPresentationDisplays, openExternalAppSession, openKioskWindow, showSettingsWindow } from "./windows";
 import { AppConfig, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
@@ -60,6 +61,34 @@ async function getVolumeControlAvailability(): Promise<VolumeControlAvailability
 }
 
 export function registerIpcHandlers(): void {
+  // Custom window drag — used by the topbar so -webkit-app-region conflicts are avoided.
+  // The renderer sends the initial screen position on mousedown; main tracks delta on each move.
+  ipcMain.on("start-window-drag", (event, { startX, startY }: { startX: number; startY: number }) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+
+    let lastX = startX;
+    let lastY = startY;
+
+    const onMove = (_: Electron.IpcMainEvent, { x, y }: { x: number; y: number }) => {
+      if (!win || win.isDestroyed()) return;
+      const dx = x - lastX;
+      const dy = y - lastY;
+      lastX = x;
+      lastY = y;
+      const [wx, wy] = win.getPosition();
+      win.setPosition(wx + dx, wy + dy);
+    };
+
+    const onStop = () => {
+      ipcMain.removeListener("drag-window-move", onMove);
+      ipcMain.removeListener("stop-window-drag", onStop);
+    };
+
+    ipcMain.on("drag-window-move", onMove);
+    ipcMain.once("stop-window-drag", onStop);
+  });
+
   ipcMain.handle("get-config", () => {
     return getConfig();
   });
@@ -67,6 +96,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle("save-config", async (_event, config: AppConfig) => {
     saveConfig(config);
     await reconcileDaemon(config);
+  });
+
+  ipcMain.handle("get-presentation-displays", () => {
+    return getPresentationDisplays();
+  });
+
+  ipcMain.handle("get-brightness-control-availability", async () => {
+    return await getBrightnessControlAvailability(getConfig());
   });
 
   ipcMain.handle("import-trmnl-recipe", async (_event, source: string) => {
@@ -115,6 +152,9 @@ export function registerIpcHandlers(): void {
             : target.durationSeconds * 1000;
         const session = await openExternalAppSession(activeTarget.launch, appDurationMs, {
           restorePreviousApp: true,
+          targetDisplayId: config.presentationDisplayId,
+          brightnessBridgeEnabled: config.brightnessControl.enabled,
+          brightnessOverridePercent: target.brightnessPercent,
           onClosed: () => {
             void activeTarget.deactivate();
           },
@@ -123,6 +163,9 @@ export function registerIpcHandlers(): void {
       } else {
         await openKioskWindow(activeTarget.url, target.durationSeconds * 1000, {
           restorePreviousApp: true,
+          targetDisplayId: config.presentationDisplayId,
+          brightnessBridgeEnabled: config.brightnessControl.enabled,
+          brightnessOverridePercent: target.brightnessPercent,
           fullScreen: target.fullScreen ?? true,
           onClosed: () => {
             void activeTarget.deactivate();

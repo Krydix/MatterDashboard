@@ -104,30 +104,72 @@ body[data-platform="darwin"] .nav-item.active {
 
 .main-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
-  /* Make empty / non-interactive areas of the main content draggable too */
-  -webkit-app-region: drag;
-}
-
-/* Restore pointer interaction for all interactive elements inside main content */
-.main-content button,
-.main-content input,
-.main-content select,
-.main-content textarea,
-.main-content a,
-.main-content label,
-.main-content .target-list,
-.main-content .target-card,
-.main-content .card,
-.main-content .empty-state {
-  -webkit-app-region: no-drag;
+  /* Anchor for the absolutely-positioned topbar */
+  position: relative;
 }
 
 /* On macOS: keep main content fully opaque so glass only shows through sidebar */
 body[data-platform="darwin"] .main-content {
   background: var(--bg);
+}
+
+/*
+  Liquid glass top bar — floats above the scroll area so content scrolls underneath.
+  Absolutely positioned so the scroll container can occupy the full height behind it.
+*/
+.page-topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  /* Barely-there glass: mostly transparent, strong blur shows content underneath */
+  background: rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(28px) saturate(2) brightness(1.04);
+  -webkit-backdrop-filter: blur(28px) saturate(2) brightness(1.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+  /* Drag is handled via mousedown IPC — no -webkit-app-region needed */
+  cursor: default;
+}
+
+@media (prefers-color-scheme: dark) {
+  .page-topbar {
+    background: rgba(30, 30, 34, 0.22);
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  }
+}
+
+.page-topbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  /* Prevent text selection and ensure events fall through to the drag region */
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+}
+
+/* Scroll container — full height behind the topbar, scrollbar constrained here.
+   padding-top offsets the initial content so it starts below the glass bar.
+   Explicitly no-drag so scrolling works everywhere in this area. */
+.page-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 32px 32px;
+  padding-top: 68px; /* topbar height (48) + breathing room (20) */
+  -webkit-app-region: no-drag;
 }
 
 .page-title {

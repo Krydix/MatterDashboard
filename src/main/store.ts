@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   AppTargetConfig,
   AppConfig,
+  BrightnessControlConfig,
   DashboardProvider,
   KioskTarget,
   TrmnlAssetMode,
@@ -16,6 +17,11 @@ import { getAppDataDir, getConfigPath } from "./app-paths";
 
 const defaultConfig: AppConfig = {
   targets: [],
+  presentationDisplayId: null,
+  brightnessControl: {
+    enabled: false,
+    name: "Brightness",
+  },
   volumeControl: {
     enabled: false,
     name: "Volume",
@@ -31,6 +37,8 @@ export function getConfig(): AppConfig {
 
     return {
       targets: sanitizeTargets(parsed.targets),
+      presentationDisplayId: sanitizePresentationDisplayId(parsed.presentationDisplayId),
+      brightnessControl: sanitizeBrightnessControl(parsed.brightnessControl),
       volumeControl: sanitizeVolumeControl(parsed.volumeControl),
       launchAtLogin: parsed.launchAtLogin ?? defaultConfig.launchAtLogin,
       backgroundDaemonEnabled:
@@ -52,6 +60,24 @@ function sanitizeTargets(targets: AppConfig["targets"] | undefined): KioskTarget
   }
 
   return targets.map(sanitizeTarget).filter((target): target is KioskTarget => target !== null);
+}
+
+function sanitizePresentationDisplayId(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : defaultConfig.presentationDisplayId;
+}
+
+function sanitizeBrightnessControl(value: Partial<BrightnessControlConfig> | undefined): BrightnessControlConfig {
+  if (!value || typeof value !== "object") {
+    return { ...defaultConfig.brightnessControl };
+  }
+
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : defaultConfig.brightnessControl.enabled,
+    name:
+      typeof value.name === "string" && value.name.trim().length > 0
+        ? value.name.trim()
+        : defaultConfig.brightnessControl.name,
+  };
 }
 
 function sanitizeVolumeControl(value: Partial<VolumeControlConfig> | undefined): VolumeControlConfig {
@@ -93,6 +119,10 @@ function sanitizeTarget(value: unknown): KioskTarget | null {
     url: target.url,
     durationSeconds: target.durationSeconds,
     enabled: target.enabled,
+    brightnessPercent:
+      typeof target.brightnessPercent === "number" && Number.isFinite(target.brightnessPercent)
+        ? Math.max(0, Math.min(100, Math.round(target.brightnessPercent)))
+        : undefined,
     fullScreen: target.fullScreen === true ? true : undefined,
     borderless: typeof target.borderless === "boolean" ? target.borderless : undefined,
     provider,

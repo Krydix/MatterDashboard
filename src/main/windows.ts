@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { BrowserWindow, screen } from "electron";
 import path from "path";
+import { readDisplayBrightness, setDisplayBrightness } from "./brightness-control";
 import { acquireKioskPowerAssertion } from "./power-management";
+import { PresentationDisplay } from "../shared/types";
 
 let settingsWindow: BrowserWindow | null = null;
 const execFileAsync = promisify(execFile);
@@ -129,6 +131,9 @@ export interface KioskWindowOptions {
   restorePreviousApp?: boolean;
   useStartupRestoreTargetFallback?: boolean;
   fullScreen?: boolean;
+  targetDisplayId?: number | null;
+  brightnessBridgeEnabled?: boolean;
+  brightnessOverridePercent?: number;
 }
 
 const RENDERER_URL =
@@ -185,6 +190,115 @@ export function showSettingsWindow(): void {
   }
 }
 
+export function getPresentationDisplays(): PresentationDisplay[] {
+  const allDisplays = screen.getAllDisplays();
+  const primaryDisplayId = screen.getPrimaryDisplay().id;
+
+  return allDisplays
+    .slice()
+    .sort((left, right) => {
+      if (left.id === primaryDisplayId) {
+        return -1;
+      }
+      if (right.id === primaryDisplayId) {
+        return 1;
+      }
+      if (left.bounds.x !== right.bounds.x) {
+        return left.bounds.x - right.bounds.x;
+      }
+      return left.bounds.y - right.bounds.y;
+    })
+    .map((display, index) => ({
+      id: display.id,
+      name: buildPresentationDisplayName(display, index + 1),
+      isPrimary: display.id === primaryDisplayId,
+      bounds: {
+        x: display.bounds.x,
+        y: display.bounds.y,
+        width: display.bounds.width,
+        height: display.bounds.height,
+      },
+    }));
+}
+
+function buildPresentationDisplayName(display: Electron.Display, displayNumber: number): string {
+  const detail = `${display.bounds.width}x${display.bounds.height}`;
+  const label = typeof display.label === "string" ? display.label.trim() : "";
+  const prefix = label.length > 0 ? label : `Display ${displayNumber}`;
+  return display.internal ? `${prefix} (${detail}, built-in)` : `${prefix} (${detail})`;
+}
+
+function resolvePresentationDisplay(targetDisplayId: number | null | undefined): Electron.Display {
+  const allDisplays = screen.getAllDisplays();
+  if (typeof targetDisplayId === "number") {
+    const selectedDisplay = allDisplays.find((display) => display.id === targetDisplayId);
+    if (selectedDisplay) {
+      return selectedDisplay;
+    }
+  }
+
+  return screen.getPrimaryDisplay();
+}
+
+async function moveFrontmostMacWindowToDisplay(targetDisplayId: number | null | undefined): Promise<void> {
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  if (typeof targetDisplayId !== "number") {
+    return;
+  }
+
+  const targetDisplay = resolvePresentationDisplay(targetDisplayId);
+  const { x, y, width, height } = targetDisplay.bounds;
+  const positionScript = [
+    'tell application "System Events"',
+    'set frontProcess to first application process whose frontmost is true',
+    'if (count of windows of frontProcess) is 0 then error "No windows available"',
+    'tell front window of frontProcess',
+    `set position to {${x}, ${y}}`,
+    `set size to {${width}, ${height}}`,
+    'end tell',
+    'end tell',
+  ];
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      await execFileAsync("osascript", positionScript.flatMap((line) => ["-e", line]), { timeout: 1500 });
+      return;
+    } catch {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 250);
+      });
+    }
+  }
+}
+
+async function beginBrightnessOverride(options: KioskWindowOptions): Promise<(() => Promise<void>) | null> {
+  if (!options.brightnessBridgeEnabled || typeof options.brightnessOverridePercent !== "number") {
+    return null;
+  }
+
+  const targetDisplay = resolvePresentationDisplay(options.targetDisplayId);
+
+  try {
+    const previousBrightness = await readDisplayBrightness(targetDisplay.id);
+    await setDisplayBrightness(targetDisplay.id, options.brightnessOverridePercent);
+    if (previousBrightness <= 0) {
+      return null;
+    }
+    return async () => {
+      try {
+        await setDisplayBrightness(targetDisplay.id, previousBrightness);
+      } catch {
+        // Best-effort restore only.
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Open a fullscreen kiosk window for the given URL, then auto-close after durationMs.
  * Returns a handle that can also close the window early.
@@ -194,8 +308,8 @@ export function openKioskWindow(
   durationMs: number,
   options: KioskWindowOptions = {},
 ): KioskWindowHandle {
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.bounds;
+  const targetDisplay = resolvePresentationDisplay(options.targetDisplayId);
+  const { width, height } = targetDisplay.bounds;
   const restoreTargetPromise = options.restorePreviousApp
     ? getMacApplicationRestoreTarget(options.useStartupRestoreTargetFallback ?? false)
     : Promise.resolve(null);
@@ -204,8 +318,8 @@ export function openKioskWindow(
   const useFullScreen = options.fullScreen ?? true;
 
   const kiosk = new BrowserWindow({
-    x: primaryDisplay.bounds.x,
-    y: primaryDisplay.bounds.y,
+    x: targetDisplay.bounds.x,
+    y: targetDisplay.bounds.y,
     width,
     height,
     frame: false,
@@ -225,9 +339,14 @@ export function openKioskWindow(
   };
 
   const closed = new Promise<void>((resolve) => {
-    kiosk.loadURL(url).catch(() => {
-      close();
-    });
+    let restoreBrightness: (() => Promise<void>) | null = null;
+
+    void (async () => {
+      restoreBrightness = await beginBrightnessOverride(options);
+      await kiosk.loadURL(url).catch(() => {
+        close();
+      });
+    })();
 
     kiosk.webContents.on("before-input-event", (_event, input) => {
       if (input.type === "keyDown" && input.key === "Escape") {
@@ -242,7 +361,8 @@ export function openKioskWindow(
     kiosk.on("closed", () => {
       clearTimeout(timer);
       powerAssertion.release();
-      void restoreTargetPromise
+      void Promise.resolve(restoreBrightness?.())
+        .then(() => restoreTargetPromise)
         .then((target) => restoreMacApplication(target))
         .finally(() => {
           options.onClosed?.();
@@ -263,10 +383,13 @@ export async function openExternalAppSession(
     ? getMacApplicationRestoreTarget(options.useStartupRestoreTargetFallback ?? false)
     : Promise.resolve(null);
   const powerAssertion = acquireKioskPowerAssertion();
+  const restoreBrightness = await beginBrightnessOverride(options);
 
   try {
     await launch();
+    await moveFrontmostMacWindowToDisplay(options.targetDisplayId);
   } catch (error) {
+    await restoreBrightness?.();
     powerAssertion.release();
     throw error;
   }
@@ -286,7 +409,8 @@ export async function openExternalAppSession(
     }
     powerAssertion.release();
 
-    void restoreTargetPromise
+    void Promise.resolve(restoreBrightness?.())
+      .then(() => restoreTargetPromise)
       .then((target) => restoreMacApplication(target))
       .finally(() => {
         options.onClosed?.();

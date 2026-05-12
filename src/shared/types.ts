@@ -111,6 +111,7 @@ export interface KioskTarget {
   url: string;
   durationSeconds: number;
   enabled: boolean;
+  brightnessPercent?: number;
   fullScreen?: boolean;
   borderless?: boolean;
   provider: DashboardProvider;
@@ -123,12 +124,34 @@ export interface VolumeControlConfig {
   name: string;
 }
 
+export interface BrightnessControlConfig {
+  enabled: boolean;
+  name: string;
+}
+
 export interface VolumeControlAvailability {
   available: boolean;
   reason: string;
 }
 
-export type MatterAccessoryKind = "dashboard" | "volume";
+export interface BrightnessControlAvailability {
+  available: boolean;
+  reason: string;
+}
+
+export interface PresentationDisplay {
+  id: number;
+  name: string;
+  isPrimary: boolean;
+  bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+export type MatterAccessoryKind = "dashboard" | "volume" | "brightness";
 
 export type MatterAccessoryDeviceType = "on-off-plug-in-unit" | "dimmable-light";
 
@@ -154,10 +177,18 @@ export interface VolumeMatterAccessory extends MatterAccessoryBase {
   level: number;
 }
 
-export type MatterAccessory = DashboardMatterAccessory | VolumeMatterAccessory;
+export interface BrightnessMatterAccessory extends MatterAccessoryBase {
+  kind: "brightness";
+  deviceType: "dimmable-light";
+  level: number;
+}
+
+export type MatterAccessory = DashboardMatterAccessory | VolumeMatterAccessory | BrightnessMatterAccessory;
 
 export interface AppConfig {
   targets: KioskTarget[];
+  presentationDisplayId: number | null;
+  brightnessControl: BrightnessControlConfig;
   volumeControl: VolumeControlConfig;
   launchAtLogin: boolean;
   backgroundDaemonEnabled: boolean;
@@ -179,7 +210,9 @@ export interface DaemonState {
 export type IpcChannels = {
   "get-config": () => AppConfig;
   "save-config": (config: AppConfig) => void;
+  "get-presentation-displays": () => PresentationDisplay[];
   "import-trmnl-recipe": (source: string) => ImportedTrmnlTarget;
+  "get-brightness-control-availability": () => BrightnessControlAvailability;
   "get-volume-control-availability": () => VolumeControlAvailability;
   "get-matter-status": () => MatterStatus;
   "reset-matter": () => void;
