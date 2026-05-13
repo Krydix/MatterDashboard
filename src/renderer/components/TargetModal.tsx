@@ -119,6 +119,12 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
   function validate(): boolean {
     const newErrors: Record<string, string> = {};
     if (!target.name.trim()) newErrors["name"] = "Name is required";
+    if (
+      target.brightnessPercent !== undefined &&
+      (!Number.isFinite(target.brightnessPercent) || target.brightnessPercent < 0 || target.brightnessPercent > 100)
+    ) {
+      newErrors["brightnessPercent"] = "Brightness must be between 0 and 100";
+    }
     if (target.provider === "url") {
       if (!target.url.trim()) {
         newErrors["url"] = "URL is required";
@@ -264,6 +270,29 @@ export default function TargetModal({ initial, onSave, onCancel }: Props): React
               autoFocus
             />
             {errors["name"] && <span className="field-error">{errors["name"]}</span>}
+          </div>
+
+          <div className="field">
+            <label htmlFor="brightness-percent">Launch Brightness Override</label>
+            <input
+              id="brightness-percent"
+              type="number"
+              min={0}
+              max={100}
+              placeholder="Leave blank to keep current brightness"
+              value={target.brightnessPercent ?? ""}
+              onChange={(e) => {
+                const nextValue = e.target.value.trim();
+                update(
+                  "brightnessPercent",
+                  nextValue.length > 0 ? Math.max(0, Math.min(100, Number(nextValue))) : undefined,
+                );
+              }}
+            />
+            <span className="field-help">
+              Optional. When display brightness bridging is enabled, this target will request the selected display brightness before launch and restore it when the session ends.
+            </span>
+            {errors["brightnessPercent"] && <span className="field-error">{errors["brightnessPercent"]}</span>}
           </div>
 
           <div className="field">

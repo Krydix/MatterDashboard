@@ -25,6 +25,7 @@ message(STATUS "MatterKiosk connectedhomeip root: ${MATTERKIOSK_CONNECTEDHOMEIP_
 message(STATUS "MatterKiosk connectedhomeip available: ${MATTERKIOSK_HAVE_CONNECTEDHOMEIP}")
 
 add_executable(matterkiosk-daemon
+  src/brightness_controller.cpp
   src/main.cpp
   src/matter_chip_process_runtime.cpp
   src/matter_runtime_factory.cpp

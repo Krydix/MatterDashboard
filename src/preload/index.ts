@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AppConfig, AppPickResult, DaemonState, ImportedTrmnlTarget, MatterStatus, VolumeControlAvailability } from "../shared/types";
+import {
+  AppConfig,
+  AppPickResult,
+  BrightnessControlAvailability,
+  DaemonState,
+  ImportedTrmnlTarget,
+  MatterStatus,
+  PresentationDisplay,
+  VolumeControlAvailability,
+} from "../shared/types";
 
 // Expose a typed API to the renderer through contextBridge.
 // The renderer has NO access to Node.js — only the methods defined here.
@@ -9,6 +18,12 @@ contextBridge.exposeInMainWorld("matterkiosk", {
   getConfig: (): Promise<AppConfig> => ipcRenderer.invoke("get-config"),
 
   saveConfig: (config: AppConfig): Promise<void> => ipcRenderer.invoke("save-config", config),
+
+  getPresentationDisplays: (): Promise<PresentationDisplay[]> =>
+    ipcRenderer.invoke("get-presentation-displays"),
+
+  getBrightnessControlAvailability: (): Promise<BrightnessControlAvailability> =>
+    ipcRenderer.invoke("get-brightness-control-availability"),
 
   importTrmnlRecipe: (source: string): Promise<ImportedTrmnlTarget> =>
     ipcRenderer.invoke("import-trmnl-recipe", source),
@@ -36,5 +51,15 @@ contextBridge.exposeInMainWorld("matterkiosk", {
     ipcRenderer.on("target-triggered", handler);
     // Return an unsubscribe function
     return () => ipcRenderer.removeListener("target-triggered", handler);
+  },
+
+  startWindowDrag: (startX: number, startY: number): void => {
+    ipcRenderer.send("start-window-drag", { startX, startY });
+  },
+  sendWindowDragMove: (x: number, y: number): void => {
+    ipcRenderer.send("drag-window-move", { x, y });
+  },
+  stopWindowDrag: (): void => {
+    ipcRenderer.send("stop-window-drag");
   },
 });

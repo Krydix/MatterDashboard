@@ -71,13 +71,7 @@ export default function TargetsPage(): React.ReactElement {
   return (
     <div>
       <div className="targets-header">
-        <div>
-          <h1 className="page-title">Targets</h1>
-          <p className="page-subtitle">
-            Each enabled target becomes a Matter outlet. Web dashboards open in MatterKiosk,
-            native apps launch directly.
-          </p>
-        </div>
+        <div />
         <div className="targets-actions">
           <button className="secondary" onClick={() => openAdd("trmnl")}>
             Import TRMNL Recipe
@@ -171,6 +165,7 @@ function describeTarget(target: KioskTarget): string {
     if (app?.arguments?.length) tags.push(`${app.arguments.length} arg${app.arguments.length === 1 ? "" : "s"}`);
     if (app?.noTimeout) tags.push("no timeout");
     if (app?.closeOnDeactivate) tags.push("auto-quit");
+    if (typeof target.brightnessPercent === "number") tags.push(`brightness ${target.brightnessPercent}%`);
     return tags.length ? `${label} (${tags.join(" · ")})` : label;
   }
 
@@ -190,13 +185,19 @@ function describeTarget(target: KioskTarget): string {
     }
 
     if (target.trmnl?.transform?.enabled) {
-      return "Native TRMNL runtime (local transform + Liquid)";
+      return typeof target.brightnessPercent === "number"
+        ? `Native TRMNL runtime (local transform + Liquid · brightness ${target.brightnessPercent}%)`
+        : "Native TRMNL runtime (local transform + Liquid)";
     }
 
-    return "Native TRMNL runtime (Liquid template + JSON data)";
+    return typeof target.brightnessPercent === "number"
+      ? `Native TRMNL runtime (Liquid template + JSON data · brightness ${target.brightnessPercent}%)`
+      : "Native TRMNL runtime (Liquid template + JSON data)";
   }
 
-  return target.url;
+  return typeof target.brightnessPercent === "number"
+    ? `${target.url} · brightness ${target.brightnessPercent}%`
+    : target.url;
 }
 
 function providerLabel(target: KioskTarget): string {

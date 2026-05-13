@@ -10,8 +10,12 @@ const sourceDir = path.join(projectRoot, "native", "daemon");
 const outputDir = path.join(projectRoot, "assets", "native", `${platform}-${arch}`);
 const binaryName = platform === "win32" ? "matterkiosk-daemon.exe" : "matterkiosk-daemon";
 const chipBridgeBinaryName = platform === "win32" ? "chip-bridge-app.exe" : "chip-bridge-app";
+const m1ddcBinaryName = "m1ddc";
 const connectedhomeipRoot = path.resolve(
   process.env["MATTERKIOSK_CONNECTEDHOMEIP_ROOT"] ?? path.join(projectRoot, "third_party", "connectedhomeip"),
+);
+const m1ddcRoot = path.resolve(
+  process.env["MATTERKIOSK_M1DDC_ROOT"] ?? path.join(projectRoot, "third_party", "m1ddc"),
 );
 const connectedhomeipBootstrapPaths = [
   path.join(connectedhomeipRoot, "third_party", "boringssl", "repo", "src"),
@@ -34,6 +38,7 @@ const stagedBinaryDir =
 const stagedBinaryPath = path.join(stagedBinaryDir, binaryName);
 const chipBridgeArtifactsDir = path.join(buildDir, "chip-bridge-artifacts");
 const stagedChipBridgeBinaryPath = path.join(outputDir, chipBridgeBinaryName);
+const stagedM1ddcBinaryPath = path.join(outputDir, m1ddcBinaryName);
 const connectedhomeipPatchPath = path.join(projectRoot, "patches", "connectedhomeip", "matterkiosk-bridge.patch");
 
 let shouldRevertConnectedhomeipPatch = false;
@@ -118,15 +123,19 @@ try {
   if (chipBridgeTarget !== null && existsSync(connectedhomeipRoot)) {
     buildConnectedhomeipBridge(chipBridgeTarget);
   }
+
+  if (platform === "darwin" && arch === "arm64") {
+    buildM1ddc();
+  }
 } finally {
   if (shouldRevertConnectedhomeipPatch) {
     revertConnectedhomeipPatch();
   }
 }
 
-function run(command, args) {
+function run(command, args, cwd = projectRoot) {
   const result = spawnSync(command, args, {
-    cwd: projectRoot,
+    cwd,
     stdio: "inherit",
   });
 
@@ -236,6 +245,26 @@ function getConnectedhomeipBridgeTarget(currentPlatform, currentArch) {
 
   console.log(`Skipping native CHIP bridge build for unsupported host: ${currentPlatform}-${currentArch}`);
   return null;
+}
+
+function buildM1ddc() {
+  if (!existsSync(m1ddcRoot)) {
+    console.log(
+      `m1ddc checkout not found at ${path.relative(projectRoot, m1ddcRoot)}; brightness helper will not be bundled.`,
+    );
+    return;
+  }
+
+  console.log(`Using m1ddc checkout: ${path.relative(projectRoot, m1ddcRoot)}`);
+  run("make", [], m1ddcRoot);
+
+  const builtM1ddcBinaryPath = path.join(m1ddcRoot, m1ddcBinaryName);
+  if (!existsSync(builtM1ddcBinaryPath)) {
+    throw new Error(`m1ddc binary not found after build: ${builtM1ddcBinaryPath}`);
+  }
+
+  copyFileSync(builtM1ddcBinaryPath, stagedM1ddcBinaryPath);
+  console.log(`Staged m1ddc helper: ${path.relative(projectRoot, stagedM1ddcBinaryPath)}`);
 }
 
 function buildConnectedhomeipBridge(target) {
