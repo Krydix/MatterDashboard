@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   AppConfig,
   BrightnessControlAvailability,
+  CliInstallStatus,
   DaemonState,
   PresentationDisplay,
   VolumeControlAvailability,
@@ -18,9 +19,18 @@ export default function SettingsPage(): React.ReactElement {
   const [saving, setSaving] = useState(false);
   const [brightnessName, setBrightnessName] = useState("");
   const [volumeName, setVolumeName] = useState("");
+  const [cliStatus, setCliStatus] = useState<CliInstallStatus | null>(null);
+  const [cliInstalling, setCliInstalling] = useState(false);
+  const [cliInstallError, setCliInstallError] = useState<string | null>(null);
 
   useEffect(() => {
     void load();
+  }, []);
+
+  useEffect(() => {
+    if (window.matterkiosk.platform !== "win32") {
+      void window.matterkiosk.checkCliInstall().then(setCliStatus);
+    }
   }, []);
 
   useEffect(() => {
@@ -252,6 +262,24 @@ export default function SettingsPage(): React.ReactElement {
     ? "Available on macOS when the current output device exposes adjustable system volume."
     : (volumeAvailability?.reason ?? "Checking current audio output support...");
 
+  async function handleInstallCli() {
+    setCliInstalling(true);
+    setCliInstallError(null);
+    try {
+      const result = await window.matterkiosk.installCli();
+      if (result.ok) {
+        const updated = await window.matterkiosk.checkCliInstall();
+        setCliStatus(updated);
+      } else {
+        setCliInstallError(result.error ?? "Installation failed.");
+      }
+    } catch (error) {
+      setCliInstallError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCliInstalling(false);
+    }
+  }
+
   return (
     <div>
       <div className="card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
@@ -417,6 +445,113 @@ export default function SettingsPage(): React.ReactElement {
           </div>
         </div>
       </div>
+
+      {window.matterkiosk.platform !== "win32" && (
+        <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Command Line Tools</div>
+              <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
+                Trigger and close dashboards from Terminal, shell scripts, or automation tools.
+              </div>
+            </div>
+            {cliStatus?.installed ? (
+              <span style={{ color: "var(--success)", fontSize: 13, fontWeight: 500, whiteSpace: "nowrap" }}>
+                ✓ Installed
+              </span>
+            ) : (
+              <button
+                className="secondary"
+                onClick={() => void handleInstallCli()}
+                disabled={cliInstalling || cliStatus === null}
+                style={{ whiteSpace: "nowrap", flexShrink: 0 }}
+              >
+                {cliInstalling ? "Installing…" : "Install CLI"}
+              </button>
+            )}
+          </div>
+
+          {cliStatus !== null && (
+            <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+              {cliStatus.installed ? "Installed at" : "Will install to"}{" "}
+              <code style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>{cliStatus.installPath}</code>
+            </div>
+          )}
+
+          {cliStatus?.installed && !cliStatus.inPath && (() => {
+            const installDir = cliStatus.installPath.replace(/\/[^/]+$/, "");
+            return (
+              <div style={{
+                background: "rgba(255, 159, 10, 0.10)",
+                border: "1px solid rgba(255, 159, 10, 0.28)",
+                borderRadius: 8,
+                padding: "10px 14px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}>
+                <div style={{ fontWeight: 500, color: "var(--warning)", fontSize: 13 }}>Add to PATH</div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  The install directory isn't in your shell <code style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>$PATH</code>.
+                  Add this line to <code style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>~/.zprofile</code>{" "}
+                  (macOS standard) or <code style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>~/.zshrc</code>:
+                </div>
+                <div style={{
+                  background: "var(--field-bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                  fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  userSelect: "text",
+                }}>
+                  export PATH="{installDir}:$PATH"
+                </div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  Then restart your terminal or run:{" "}
+                  <code style={{ fontFamily: "'SF Mono', 'Menlo', monospace" }}>source ~/.zshrc</code>
+                </div>
+              </div>
+            );
+          })()}
+
+          {cliInstallError !== null && (
+            <div style={{ color: "#ff453a", fontSize: 12 }}>{cliInstallError}</div>
+          )}
+
+          {config !== null && config.targets.length > 0 && (() => {
+            const exampleTarget = config.targets.find(t => t.enabled) ?? config.targets[0];
+            const exampleName = exampleTarget.name;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ color: "var(--text-muted)", fontSize: 12 }}>Example usage:</div>
+                <div style={{
+                  background: "var(--field-bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 5,
+                }}>
+                  <div>
+                    <span style={{ color: "var(--text-muted)", userSelect: "none" }}>$ </span>
+                    matterkiosk trigger "{exampleName}"
+                  </div>
+                  <div>
+                    <span style={{ color: "var(--text-muted)", userSelect: "none" }}>$ </span>
+                    matterkiosk stop "{exampleName}"
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       <div className="card">
         <div style={{ fontWeight: 600, marginBottom: 4 }}>Version</div>

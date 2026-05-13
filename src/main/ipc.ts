@@ -1,13 +1,16 @@
 import { execFile } from "node:child_process";
+import { promises as fsPromises, constants as fsConstants } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
-import { BrowserWindow, dialog, ipcMain, session } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session } from "electron";
 import { getBrightnessControlAvailability } from "./brightness-control";
 import { getDaemonState, getMatterStatus, reconcileDaemon, resetMatter } from "./daemon-manager";
 import { activateKioskTarget } from "./dashboard-runtime";
 import { importTrmnlRecipe } from "./trmnl-import";
 import { getConfig, saveConfig } from "./store";
 import { getPresentationDisplays, openExternalAppSession, openKioskWindow, showSettingsWindow } from "./windows";
-import { AppConfig, MatterStatus, VolumeControlAvailability } from "../shared/types";
+import { AppConfig, CliInstallStatus, MatterStatus, VolumeControlAvailability } from "../shared/types";
 
 const execFileAsync = promisify(execFile);
 
@@ -265,4 +268,86 @@ export function registerIpcHandlers(): void {
 
     return { applicationPath, applicationName, bundleId };
   });
+
+  ipcMain.handle("check-cli-install", async (): Promise<CliInstallStatus> => {
+    return getCliInstallStatus();
+  });
+
+  ipcMain.handle("install-cli", async (): Promise<{ ok: boolean; installPath: string; error?: string }> => {
+    const status = await getCliInstallStatus();
+    try {
+      await fsPromises.mkdir(path.dirname(status.installPath), { recursive: true });
+      // Remove any pre-existing symlink or file at the target path
+      await fsPromises.rm(status.installPath, { force: true });
+      await fsPromises.symlink(status.cliSourcePath, status.installPath);
+      return { ok: true, installPath: status.installPath };
+    } catch (error) {
+      return {
+        ok: false,
+        installPath: status.installPath,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+}
+
+function getCliBinarySourcePath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "bin", "matterkiosk");
+  }
+  // In development: __dirname is dist/main/, project root is two levels up
+  return path.resolve(__dirname, "../../assets/bin/matterkiosk");
+}
+
+async function resolveCliInstallDir(): Promise<string> {
+  // Try standard PATH-included directories in priority order.
+  // /opt/homebrew/bin is the Homebrew prefix on Apple Silicon;
+  // /usr/local/bin is the Homebrew prefix on Intel and is always in PATH.
+  const candidates = ["/usr/local/bin", "/opt/homebrew/bin"];
+  for (const dir of candidates) {
+    try {
+      await fsPromises.access(dir, fsConstants.W_OK);
+      return dir;
+    } catch {
+      // not writable or doesn't exist — try next
+    }
+  }
+  return path.join(homedir(), ".local", "bin");
+}
+
+// Directories that macOS includes in PATH by default or that package managers
+// (Homebrew) guarantee are on PATH. If the CLI lands here, no shell config is needed.
+const WELL_KNOWN_PATH_DIRS = new Set([
+  "/usr/local/bin",
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/opt/local/bin",   // MacPorts
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+]);
+
+async function getCliInstallStatus(): Promise<CliInstallStatus> {
+  const cliSourcePath = getCliBinarySourcePath();
+  const installDir = await resolveCliInstallDir();
+  const installPath = path.join(installDir, "matterkiosk");
+
+  let installed = false;
+  try {
+    const stat = await fsPromises.lstat(installPath);
+    if (stat.isSymbolicLink()) {
+      const linkTarget = await fsPromises.readlink(installPath);
+      installed = linkTarget === cliSourcePath;
+    } else {
+      installed = stat.isFile();
+    }
+  } catch {
+    installed = false;
+  }
+
+  const pathDirs = (process.env.PATH ?? "").split(":");
+  const inPath = WELL_KNOWN_PATH_DIRS.has(installDir) || pathDirs.includes(installDir);
+
+  return { installed, installPath, cliSourcePath, inPath };
 }

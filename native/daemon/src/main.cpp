@@ -4,6 +4,7 @@
 #include "volume_controller.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -564,37 +565,82 @@ void terminate_process(const ChildProcess &process) {
 }
 
 bool try_ping_existing_daemon(const fs::path &socketPath) {
+  try {
+    const JsonValue response = [&socketPath]() {
+      const int client = ::socket(AF_UNIX, SOCK_STREAM, 0);
+      if (client < 0) {
+        throw std::runtime_error("Failed to create daemon control client socket");
+      }
+
+      sockaddr_un address{};
+      address.sun_family = AF_UNIX;
+      std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", socketPath.c_str());
+
+      const int connected = ::connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+      if (connected != 0) {
+        ::close(client);
+        throw std::runtime_error("Failed to connect to daemon control socket");
+      }
+
+      const std::string request = "{\"type\":\"ping\"}\n";
+      write_all(client, request);
+      std::string responseLine;
+      const bool ok = read_line(client, responseLine);
+      ::close(client);
+
+      if (!ok) {
+        throw std::runtime_error("Failed to read daemon control response");
+      }
+
+      return mkjson::parse(responseLine);
+    }();
+    return bool_or(response, "ok", false);
+  } catch (...) {
+    return false;
+  }
+}
+
+[[nodiscard]] JsonValue call_existing_daemon(const JsonValue &request) {
   const int client = ::socket(AF_UNIX, SOCK_STREAM, 0);
   if (client < 0) {
-    return false;
+    throw std::runtime_error("Failed to create daemon control client socket");
   }
 
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
+  const fs::path socketPath = daemon_socket_path();
   std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", socketPath.c_str());
 
   const int connected = ::connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address));
   if (connected != 0) {
     ::close(client);
-    return false;
+    throw std::runtime_error("Failed to connect to daemon control socket");
   }
 
-  const std::string request = "{\"type\":\"ping\"}\n";
-  write_all(client, request);
+  write_all(client, mkjson::stringify(request) + "\n");
   std::string response;
   const bool ok = read_line(client, response);
   ::close(client);
 
   if (!ok) {
-    return false;
+    throw std::runtime_error("Failed to read daemon control response");
   }
 
-  try {
-    const JsonValue parsed = mkjson::parse(response);
-    return bool_or(parsed, "ok", false);
-  } catch (...) {
-    return false;
+  return mkjson::parse(response);
+}
+
+[[nodiscard]] JsonValue require_ok_daemon_result(const JsonValue &request) {
+  const JsonValue response = call_existing_daemon(request);
+  if (!bool_or(response, "ok", false)) {
+    const JsonValue *error = response.find("error");
+    if (error != nullptr && error->is_string() && !error->as_string().empty()) {
+      throw std::runtime_error(error->as_string());
+    }
+    throw std::runtime_error("Matter daemon request failed");
   }
+
+  const JsonValue *result = response.find("result");
+  return result == nullptr ? JsonValue() : *result;
 }
 #endif
 
@@ -749,6 +795,18 @@ class NativeDaemon {
       if (type == "reset") {
         status_ = runtime_->reset();
         return JsonValue::Object{{"ok", true}, {"result", status_to_json(status_)}};
+      }
+
+      if (type == "list-targets") {
+        return JsonValue::Object{{"ok", true}, {"result", targets_to_json(config_.targets)}};
+      }
+
+      if (type == "trigger-target") {
+        return JsonValue::Object{{"ok", true}, {"result", trigger_dashboard_target(require_string(request, "targetId"), true)}};
+      }
+
+      if (type == "stop-target") {
+        return JsonValue::Object{{"ok", true}, {"result", stop_dashboard_target(require_string(request, "targetId"), true)}};
       }
 
       if (type == "shutdown") {
@@ -1024,48 +1082,11 @@ class NativeDaemon {
   }
 
   void handle_dashboard_triggered(const std::string &targetId) {
-    std::optional<KioskTarget> target;
-    {
-      std::lock_guard<std::mutex> lock(dashboardMutex_);
-      if (activeDashboards_.contains(targetId)) {
-        return;
-      }
-
-      for (const auto &entry : config_.targets) {
-        if (entry.id == targetId && entry.enabled) {
-          target = entry;
-          break;
-        }
-      }
+    try {
+      (void)trigger_dashboard_target(targetId, false);
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to trigger target " << targetId << ": " << error.what() << "\n";
     }
-
-    if (!target.has_value()) {
-      return;
-    }
-
-#if defined(__APPLE__) || defined(__linux__)
-    ChildProcess child = spawn_dashboard_process(dashboard_executable_path(), dashboard_arguments(target->id), dashboard_environment());
-
-    {
-      std::lock_guard<std::mutex> lock(dashboardMutex_);
-      activeDashboards_[target->id] = child;
-    }
-
-    std::thread([this, targetId = target->id, pid = child.pid]() {
-      ::waitpid(pid, nullptr, 0);
-      {
-        std::lock_guard<std::mutex> lock(dashboardMutex_);
-        activeDashboards_.erase(targetId);
-      }
-      if (!shuttingDown_.load()) {
-        try {
-          runtime_->setAccessoryOff(targetId);
-        } catch (const std::exception &error) {
-          std::cerr << "Failed to clear target " << targetId << ": " << error.what() << "\n";
-        }
-      }
-    }).detach();
-#endif
   }
 
   void handle_accessory_turned_off(const std::string &accessoryId) {
@@ -1079,13 +1100,11 @@ class NativeDaemon {
       return;
     }
 
-    const std::string &targetId = accessoryId;
-    std::lock_guard<std::mutex> lock(dashboardMutex_);
-    const auto it = activeDashboards_.find(targetId);
-    if (it == activeDashboards_.end()) {
-      return;
+    try {
+      (void)stop_dashboard_target(accessoryId, false);
+    } catch (const std::exception &error) {
+      std::cerr << "Failed to stop target " << accessoryId << ": " << error.what() << "\n";
     }
-    terminate_process(it->second);
   }
 
   void handle_accessory_level_changed(const std::string &accessoryId, std::uint8_t level) {
@@ -1296,6 +1315,136 @@ class NativeDaemon {
     return {{"ELECTRON_RUN_AS_NODE", ""}};
   }
 
+  [[nodiscard]] MatterAccessory build_dashboard_accessory(const KioskTarget &target, bool on) const {
+    return MatterAccessory{
+        .id = target.id,
+        .name = target.name,
+        .kind = MatterAccessoryKind::Dashboard,
+        .deviceType = MatterAccessoryDeviceType::OnOffPlugInUnit,
+        .url = target.url,
+        .durationSeconds = target.durationSeconds,
+        .enabled = target.enabled,
+        .on = on,
+        .level = 0,
+    };
+  }
+
+  [[nodiscard]] std::optional<KioskTarget> find_target_by_id(const std::string &query, bool requireEnabled) const {
+    // First pass: exact ID match.
+    for (const auto &target : config_.targets) {
+      if (target.id == query) {
+        if (requireEnabled && !target.enabled) {
+          throw std::runtime_error("Target is disabled: " + target.name);
+        }
+        return target;
+      }
+    }
+
+    // Second pass: case-insensitive name match.
+    std::string lowerQuery = query;
+    std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const auto &target : config_.targets) {
+      std::string lowerName = target.name;
+      std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (lowerName == lowerQuery) {
+        if (requireEnabled && !target.enabled) {
+          throw std::runtime_error("Target is disabled: " + target.name);
+        }
+        return target;
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  void watch_dashboard_process(const std::string &targetId, pid_t pid) {
+    std::thread([this, targetId, pid]() {
+      ::waitpid(pid, nullptr, 0);
+      {
+        std::lock_guard<std::mutex> lock(dashboardMutex_);
+        activeDashboards_.erase(targetId);
+      }
+      if (!shuttingDown_.load()) {
+        try {
+          runtime_->setAccessoryOff(targetId);
+        } catch (const std::exception &error) {
+          std::cerr << "Failed to clear target " << targetId << ": " << error.what() << "\n";
+        }
+      }
+    }).detach();
+  }
+
+  [[nodiscard]] bool trigger_dashboard_target(const std::string &query, bool updateMatterState) {
+    const std::optional<KioskTarget> target = find_target_by_id(query, true);
+    if (!target.has_value()) {
+      throw std::runtime_error("Unknown target: " + query);
+    }
+    const std::string &id = target->id;
+
+    {
+      std::lock_guard<std::mutex> lock(dashboardMutex_);
+      if (activeDashboards_.contains(id)) {
+        return false;
+      }
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    ChildProcess child = spawn_dashboard_process(dashboard_executable_path(), dashboard_arguments(id), dashboard_environment());
+
+    {
+      std::lock_guard<std::mutex> lock(dashboardMutex_);
+      if (activeDashboards_.contains(id)) {
+        terminate_process(child);
+        return false;
+      }
+      activeDashboards_[id] = child;
+    }
+
+    watch_dashboard_process(id, child.pid);
+    if (updateMatterState) {
+      runtime_->setAccessoryState(build_dashboard_accessory(*target, true));
+    }
+    return true;
+#else
+    (void)updateMatterState;
+    throw std::runtime_error("Dashboard triggering is only implemented on Unix-like hosts in this revision.");
+#endif
+  }
+
+  [[nodiscard]] bool stop_dashboard_target(const std::string &query, bool updateMatterState) {
+    // Resolve name-or-id to canonical target so activeDashboards_ is always keyed by UUID.
+    const std::optional<KioskTarget> target = find_target_by_id(query, false);
+    const std::string id = target.has_value() ? target->id : query;
+
+    ChildProcess child;
+    bool wasActive = false;
+
+    {
+      std::lock_guard<std::mutex> lock(dashboardMutex_);
+      const auto active = activeDashboards_.find(id);
+      if (active != activeDashboards_.end()) {
+        child = active->second;
+        wasActive = true;
+      }
+    }
+
+    if (!wasActive && !target.has_value()) {
+      throw std::runtime_error("Unknown target: " + query);
+    }
+
+    if (wasActive) {
+      terminate_process(child);
+    }
+
+    if (updateMatterState) {
+      runtime_->setAccessoryOff(id);
+    }
+
+    return wasActive;
+  }
+
   void write_pid_file() {
     ensure_directory(runtime_dir());
     std::ofstream stream(daemon_pid_path());
@@ -1380,15 +1529,117 @@ void signal_handler(int) {
   }
 }
 
+void print_cli_usage(std::ostream &stream) {
+  stream << "Usage:\n"
+         << "  matterkiosk serve                  Run the background daemon\n"
+         << "  matterkiosk list                   List all configured targets\n"
+         << "  matterkiosk trigger <name|id>      Open a configured target\n"
+         << "  matterkiosk stop <name|id>         Close a configured target\n"
+         << "  matterkiosk status                 Print daemon Matter status as JSON\n"
+         << "  matterkiosk ping                   Check whether the daemon is reachable\n";
+}
+
+int run_cli_command(int argc, char **argv) {
+  if (argc <= 1) {
+    NativeDaemon daemon;
+    return daemon.run();
+  }
+
+  const std::string command = argv[1];
+  if (command == "serve") {
+    NativeDaemon daemon;
+    return daemon.run();
+  }
+
+  if (command == "help" || command == "--help" || command == "-h") {
+    print_cli_usage(std::cout);
+    return 0;
+  }
+
+#if defined(__APPLE__) || defined(__linux__)
+  if (command == "ping") {
+    const JsonValue result = require_ok_daemon_result(JsonValue::Object{{"type", "ping"}});
+    (void)result;
+    std::cout << "ok\n";
+    return 0;
+  }
+
+  if (command == "status") {
+    std::cout << mkjson::stringify(require_ok_daemon_result(JsonValue::Object{{"type", "get-status"}})) << "\n";
+    return 0;
+  }
+
+  if (command == "list") {
+    const JsonValue result = require_ok_daemon_result(JsonValue::Object{{"type", "list-targets"}});
+    if (!result.is_array()) {
+      throw std::runtime_error("Unexpected response from daemon.");
+    }
+    const auto &entries = result.as_array();
+    if (entries.empty()) {
+      std::cout << "No targets configured.\n";
+    } else {
+      std::cout << "  ID                                    NAME\n";
+      for (const auto &entry : entries) {
+        const std::string name    = require_string(entry, "name");
+        const std::string id      = require_string(entry, "id");
+        const bool enabled        = bool_or(entry, "enabled", true);
+        std::cout << "  " << id << "  " << name;
+        if (!enabled) {
+          std::cout << "  (disabled)";
+        }
+        std::cout << "\n";
+      }
+    }
+    return 0;
+  }
+
+  if (command == "trigger" || command == "open") {
+    if (argc <= 2) {
+      throw std::runtime_error("trigger requires a target name or id");
+    }
+
+    const std::string targetId = argv[2];
+    const JsonValue result = require_ok_daemon_result(JsonValue::Object{{"type", "trigger-target"}, {"targetId", targetId}});
+    const bool triggered = result.is_bool() ? result.as_bool() : true;
+    if (triggered) {
+      std::cout << "Triggered target \"" << targetId << "\".\n";
+    } else {
+      std::cout << "Target \"" << targetId << "\" is already active.\n";
+    }
+    return 0;
+  }
+
+  if (command == "stop" || command == "close") {
+    if (argc <= 2) {
+      throw std::runtime_error("stop requires a target name or id");
+    }
+
+    const std::string targetId = argv[2];
+    const JsonValue result = require_ok_daemon_result(JsonValue::Object{{"type", "stop-target"}, {"targetId", targetId}});
+    const bool stopped = result.is_bool() ? result.as_bool() : false;
+    if (stopped) {
+      std::cout << "Stopped target \"" << targetId << "\".\n";
+    } else {
+      std::cout << "Target \"" << targetId << "\" was not active.\n";
+    }
+    return 0;
+  }
+#else
+  (void)argv;
+#endif
+
+  print_cli_usage(std::cerr);
+  return 1;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
 
   try {
-    NativeDaemon daemon;
-    return daemon.run();
+    return run_cli_command(argc, argv);
   } catch (const std::exception &error) {
     std::cerr << "[NativeDaemon] Fatal error: " << error.what() << "\n";
     return 1;

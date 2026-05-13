@@ -1,0 +1,56 @@
+#!/bin/sh
+
+set -eu
+
+# Resolve the real location of this script by following all symlinks.
+# macOS readlink does not support -f, so we loop manually.
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+  LINK_TARGET=$(readlink "$SCRIPT")
+  case "$LINK_TARGET" in
+    /*) SCRIPT="$LINK_TARGET" ;;
+    *)  SCRIPT="$SCRIPT_DIR/$LINK_TARGET" ;;
+  esac
+done
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+RESOURCE_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+case "$(uname -s)" in
+  Darwin)
+    platform="darwin"
+    ;;
+  Linux)
+    platform="linux"
+    ;;
+  *)
+    echo "MatterKiosk CLI is not supported on this platform." >&2
+    exit 1
+    ;;
+esac
+
+case "$(uname -m)" in
+  arm64|aarch64)
+    arch="arm64"
+    ;;
+  x86_64|amd64)
+    arch="x64"
+    ;;
+  *)
+    echo "MatterKiosk CLI does not support this CPU architecture." >&2
+    exit 1
+    ;;
+esac
+
+if [ "$platform" = "darwin" ]; then
+  DAEMON_BIN="$RESOURCE_ROOT/native/$platform-$arch/matterkiosk-daemon.app/Contents/MacOS/matterkiosk-daemon"
+else
+  DAEMON_BIN="$RESOURCE_ROOT/native/$platform-$arch/matterkiosk-daemon"
+fi
+
+if [ ! -x "$DAEMON_BIN" ]; then
+  echo "MatterKiosk CLI could not locate the bundled matterkiosk-daemon binary at $DAEMON_BIN" >&2
+  exit 1
+fi
+
+exec "$DAEMON_BIN" "$@"

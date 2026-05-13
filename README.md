@@ -43,6 +43,25 @@ Build the app:
 make build
 ```
 
+## CLI
+
+MatterKiosk now ships a small local CLI wrapper for daemon-controlled targets.
+
+Example commands:
+
+```bash
+matterkiosk trigger kitchen-display
+matterkiosk stop kitchen-display
+```
+
+The CLI talks to the local background daemon over the existing control socket, so the app must be running with Background Daemon enabled.
+
+In packaged macOS builds, the wrapper is shipped at `MatterKiosk.app/Contents/Resources/bin/matterkiosk`. If you want the short command in your shell, symlink it into your PATH:
+
+```bash
+ln -sf /Applications/MatterKiosk.app/Contents/Resources/bin/matterkiosk /usr/local/bin/matterkiosk
+```
+
 Build a macOS package:
 
 ```bash

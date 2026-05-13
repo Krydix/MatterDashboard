@@ -61,9 +61,14 @@
     "files": [
       "dist/**/*",
       "assets/**/*",
+      "!assets/bin/**/*",
       "!assets/native/**/*"
     ],
     "extraResources": [
+      {
+        "from": "assets/bin",
+        "to": "bin"
+      },
       {
         "from": "assets/native",
         "to": "native"

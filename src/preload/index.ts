@@ -3,6 +3,7 @@ import {
   AppConfig,
   AppPickResult,
   BrightnessControlAvailability,
+  CliInstallStatus,
   DaemonState,
   ImportedTrmnlTarget,
   MatterStatus,
@@ -45,6 +46,11 @@ contextBridge.exposeInMainWorld("matterkiosk", {
   browseRecipes: (): Promise<string | null> => ipcRenderer.invoke("browse-trmnl-recipes"),
 
   pickApp: (): Promise<AppPickResult | null> => ipcRenderer.invoke("pick-app"),
+
+  checkCliInstall: (): Promise<CliInstallStatus> => ipcRenderer.invoke("check-cli-install"),
+
+  installCli: (): Promise<{ ok: boolean; installPath: string; error?: string }> =>
+    ipcRenderer.invoke("install-cli"),
 
   onTargetTriggered: (callback: (targetId: string) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, targetId: string) => callback(targetId);

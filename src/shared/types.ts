@@ -207,6 +207,13 @@ export interface DaemonState {
   launchAtLogin: boolean;
 }
 
+export interface CliInstallStatus {
+  installed: boolean;
+  installPath: string;
+  cliSourcePath: string;
+  inPath: boolean;
+}
+
 export type IpcChannels = {
   "get-config": () => AppConfig;
   "save-config": (config: AppConfig) => void;
@@ -219,4 +226,6 @@ export type IpcChannels = {
   "set-launch-at-login": (enabled: boolean) => void;
   "target-triggered": (targetId: string) => void;
   "pick-app": () => AppPickResult | null;
+  "check-cli-install": () => CliInstallStatus;
+  "install-cli": () => { ok: boolean; installPath: string; error?: string };
 };

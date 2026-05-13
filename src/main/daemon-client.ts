@@ -24,6 +24,14 @@ export function resetMatterFromDaemon(): Promise<void> {
   return callDaemon<void>({ type: "reset" });
 }
 
+export function triggerTargetFromDaemon(targetId: string): Promise<boolean> {
+  return callDaemon<boolean>({ type: "trigger-target", targetId });
+}
+
+export function stopTargetFromDaemon(targetId: string): Promise<boolean> {
+  return callDaemon<boolean>({ type: "stop-target", targetId });
+}
+
 export function shutdownDaemon(): Promise<void> {
   return callDaemon<void>({ type: "shutdown" });
 }

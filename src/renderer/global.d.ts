@@ -2,6 +2,7 @@ import {
   AppConfig,
   AppPickResult,
   BrightnessControlAvailability,
+  CliInstallStatus,
   DaemonState,
   ImportedTrmnlTarget,
   MatterStatus,
@@ -24,6 +25,8 @@ interface MatterKioskAPI {
   openKiosk(targetId: string): Promise<void>;
   browseRecipes(): Promise<string | null>;
   pickApp(): Promise<AppPickResult | null>;
+  checkCliInstall(): Promise<CliInstallStatus>;
+  installCli(): Promise<{ ok: boolean; installPath: string; error?: string }>;
   onTargetTriggered(callback: (targetId: string) => void): () => void;
   startWindowDrag(startX: number, startY: number): void;
   sendWindowDragMove(x: number, y: number): void;
